@@ -53,6 +53,9 @@ void graphics_request_buffer_swap(uint8_t *buffer);
 // Returns monotonically increasing frame counter.
 uint32_t get_frame_count(void);
 
+// Returns true once the pending buffer swap has been applied at vsync.
+bool graphics_swap_completed(void);
+
 // Initialize the pair-encoded 16-color palette.
 // colors[0..15] are RGB888 values. Fills the 256-entry conv_color table
 // so that byte value b maps to TMDS(left=colors[b>>4], right=colors[b&0xF]).

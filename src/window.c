@@ -2,6 +2,7 @@
 #include "window_theme.h"
 #include "window_event.h"
 #include "window_draw.h"
+#include "cursor.h"
 #include "display.h"
 #include "gfx.h"
 #include "font.h"
@@ -30,6 +31,7 @@ static inline bool valid_hwnd(hwnd_t h) {
  *=========================================================================*/
 
 void wm_init(void) {
+    wm_event_init();
     memset(windows, 0, sizeof(windows));
     memset(z_stack, 0, sizeof(z_stack));
     z_count = 0;
@@ -232,6 +234,7 @@ window_t *wm_get_window(hwnd_t hwnd) {
 void wm_invalidate(hwnd_t hwnd) {
     if (!valid_hwnd(hwnd)) return;
     windows[hwnd - 1].flags |= WF_DIRTY;
+    wm_mark_dirty();
 }
 
 void wm_set_title(hwnd_t hwnd, const char *title) {
@@ -373,6 +376,11 @@ void wm_composite(void) {
 
         win->flags &= ~WF_DIRTY;
     }
+
+    /* Draw mouse cursor as final layer */
+    int16_t mx, my;
+    wm_get_cursor_pos(&mx, &my);
+    cursor_draw(mx, my);
 
     display_swap_buffers();
 }

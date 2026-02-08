@@ -209,6 +209,10 @@ _Static_assert(sizeof(window_event_t) <= 12, "window_event_t exceeds 12 bytes");
  * Event dispatch API
  *=========================================================================*/
 
+/* Initialize the event subsystem (spinlock, queue).  Call once at startup
+ * before any events are posted. */
+void wm_event_init(void);
+
 /* Post an event to a window's queue.
  * Returns true if the event was enqueued. */
 bool wm_post_event(hwnd_t hwnd, const window_event_t *event);
@@ -226,10 +230,24 @@ void wm_dispatch_events(void);
 /* Current mouse position in screen coordinates */
 point_t wm_get_mouse_pos(void);
 
+/* Set / get cursor position (atomic packed word, safe cross-task) */
+void wm_set_cursor_pos(int16_t x, int16_t y);
+void wm_get_cursor_pos(int16_t *x, int16_t *y);
+
+/* Set / get live mouse button state */
+void    wm_set_mouse_buttons(uint8_t buttons);
+uint8_t wm_get_mouse_buttons(void);
+
 /* Is a key currently held down? (by PS/2 scancode) */
 bool wm_is_key_down(uint8_t scancode);
 
 /* Current modifier state */
 uint8_t wm_get_modifiers(void);
+
+/* Compositor dirty flag — set when anything visual changed.
+ * display_task checks this to avoid recompositing idle frames,
+ * which eliminates SRAM bus pressure that starves the HDMI DMA. */
+void wm_mark_dirty(void);
+bool wm_needs_composite(void);
 
 #endif /* WINDOW_EVENT_H */

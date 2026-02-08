@@ -9,8 +9,9 @@
  * BOARD_M2 - M2 GPIO layout (default)
  *
  * M2 GPIO Layout:
- *   HDMI: CLKN=12, CLKP=13, D0N=14, D0P=15, D1N=16, D1P=17, D2N=18, D2P=19
- *   PS/2: CLK=2, DATA=3
+ *   HDMI:       CLKN=12, CLKP=13, D0N=14, D0P=15, D1N=16, D1P=17, D2N=18, D2P=19
+ *   PS/2 Kbd:   CLK=2, DATA=3
+ *   PS/2 Mouse: CLK=0, DATA=1
  */
 
 #if !defined(BOARD_M1) && !defined(BOARD_M2)
@@ -47,6 +48,9 @@
 #define PS2_PIN_CLK  0
 #define PS2_PIN_DATA 1
 
+#define PS2_MOUSE_CLK  14
+#define PS2_MOUSE_DATA 15
+
 #endif // BOARD_M1
 
 //=============================================================================
@@ -67,6 +71,9 @@
 
 #define PS2_PIN_CLK  2
 #define PS2_PIN_DATA 3
+
+#define PS2_MOUSE_CLK  0
+#define PS2_MOUSE_DATA 1
 
 #endif // BOARD_M2
 

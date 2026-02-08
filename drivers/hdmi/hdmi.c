@@ -23,13 +23,25 @@ static bool g_defer_irq_to_core1 = false;
 static uint8_t *graphics_buffer = NULL;
 static volatile uint8_t *graphics_pending_buffer = NULL;
 static volatile uint32_t graphics_frame_count = 0;
+static volatile bool graphics_swap_done = false;
+
+/* Snapshot of graphics_buffer taken at vsync — used by the IRQ handler
+ * throughout the frame so a mid-frame swap request can never cause the
+ * handler to read from two different buffers in the same frame. */
+static uint8_t *scanline_source = NULL;
 
 void graphics_set_buffer(uint8_t *buffer) {
     graphics_buffer = buffer;
+    scanline_source = buffer;
 }
 
 void graphics_request_buffer_swap(uint8_t *buffer) {
+    graphics_swap_done = false;
     graphics_pending_buffer = buffer;
+}
+
+bool graphics_swap_completed(void) {
+    return graphics_swap_done;
 }
 
 uint32_t __not_in_flash() get_frame_count(void) {
@@ -56,7 +68,11 @@ void __not_in_flash_func(vsync_handler)() {
     if (pending) {
         graphics_buffer = pending;
         graphics_pending_buffer = NULL;
+        graphics_swap_done = true;
     }
+    /* Snapshot the active buffer for this entire frame — the IRQ handler
+     * must never see a buffer pointer change mid-frame. */
+    scanline_source = graphics_buffer;
 }
 
 // --- PIO and DMA state ---
@@ -89,15 +105,22 @@ static int dma_chan_ctrl;
 static int dma_chan;
 static int dma_chan_pal_conv_ctrl;
 static int dma_chan_pal_conv;
+static int dma_chan_copy = -1;  // DMA channel for memcpy
 
 // DMA line buffers
 static uint32_t* dma_lines[2] = { NULL, NULL };
 static uint32_t* DMA_BUF_ADDR[2];
 
+// Copy DMA config
+static dma_channel_config dma_conf_copy;
+
 // Palette conversion table — 4096-byte aligned
 // 256 entries × 2 uint64_t (left+right pixel TMDS) = 1024 uint32_t
-// Plus 200 uint32_t for two DMA line buffers at the tail
-alignas(4096) uint32_t conv_color[1224];
+// Plus 208 uint32_t for two DMA line buffers at the tail (104 each).
+// Each line buffer is 408 bytes: 400 real + 8 padding blanking bytes.
+// The padding keeps the DMA pipeline fed during the chain restart gap
+// between scanlines, preventing the video PIO FIFO from underrunning.
+alignas(4096) uint32_t conv_color[1232];
 
 static uint32_t irq_inx = 0;
 
@@ -197,7 +220,37 @@ static void pio_set_x(PIO pio, const int sm, uint32_t v) {
     pio_sm_exec(pio, sm, instr_mov);
 }
 
-// --- Fast memset (runs from SRAM) ---
+// --- Fast memcpy / memset (runs from SRAM) ---
+
+static inline void* __not_in_flash_func(nf_memcpy)(void* dst, const void* src, size_t len) {
+    uint8_t* d = (uint8_t*)dst;
+    const uint8_t* s = (const uint8_t*)src;
+
+    /* Align destination to 4-byte boundary */
+    while (len && ((uintptr_t)d & 3)) {
+        *d++ = *s++;
+        len--;
+    }
+
+    if (((uintptr_t)s & 3) == 0) {
+        /* Both aligned — copy words */
+        uint32_t* d32 = (uint32_t*)d;
+        const uint32_t* s32 = (const uint32_t*)s;
+        size_t n32 = len >> 2;
+        while (n32--) {
+            *d32++ = *s32++;
+        }
+        d = (uint8_t*)d32;
+        s = (const uint8_t*)s32;
+        len &= 3;
+    }
+
+    while (len--) {
+        *d++ = *s++;
+    }
+
+    return dst;
+}
 
 static inline void* __not_in_flash_func(nf_memset)(void* ptr, int value, size_t len) {
     uint8_t* p = (uint8_t*)ptr;
@@ -253,9 +306,10 @@ static void __not_in_flash_func(dma_handler_HDMI)() {
         uint8_t* output_buffer = activ_buf + 72; // sync alignment offset
         int y = line;  // 1:1 mapping, no vertical doubling
 
-        uint8_t* input_buffer = get_line_buffer(y);
-        if (input_buffer) {
-            memcpy(output_buffer, input_buffer, SCREEN_WIDTH);
+        /* Use the frame-stable snapshot pointer, never the live pointer */
+        uint8_t *src = scanline_source;
+        if (src && y >= 0 && y < SCREEN_HEIGHT) {
+            nf_memcpy(output_buffer, src + y * SCREEN_WIDTH, SCREEN_WIDTH);
         } else {
             nf_memset(output_buffer, 0, SCREEN_WIDTH);
         }
@@ -263,15 +317,15 @@ static void __not_in_flash_func(dma_handler_HDMI)() {
         // Horizontal sync intervals
         nf_memset(activ_buf + 48, BASE_HDMI_CTRL_INX, 24);
         nf_memset(activ_buf, BASE_HDMI_CTRL_INX + 1, 48);
-        nf_memset(activ_buf + 392, BASE_HDMI_CTRL_INX, 8);
+        nf_memset(activ_buf + 392, BASE_HDMI_CTRL_INX, 16); // 8 front porch + 8 padding
     } else {
         if ((line >= 490) && (line < 492)) {
             // Vertical sync pulse
-            nf_memset(activ_buf + 48, BASE_HDMI_CTRL_INX + 2, 352);
+            nf_memset(activ_buf + 48, BASE_HDMI_CTRL_INX + 2, 360); // 352 + 8 padding
             nf_memset(activ_buf, BASE_HDMI_CTRL_INX + 3, 48);
         } else {
             // Blanking (no image)
-            nf_memset(activ_buf + 48, BASE_HDMI_CTRL_INX, 352);
+            nf_memset(activ_buf + 48, BASE_HDMI_CTRL_INX, 360); // 352 + 8 padding
             nf_memset(activ_buf, BASE_HDMI_CTRL_INX + 1, 48);
         }
     }
@@ -378,7 +432,8 @@ static inline bool hdmi_init(void) {
 
         // Stop all DMA channels
         dma_hw->abort = (1 << dma_chan_ctrl) | (1 << dma_chan) |
-                        (1 << dma_chan_pal_conv) | (1 << dma_chan_pal_conv_ctrl);
+                        (1 << dma_chan_pal_conv) | (1 << dma_chan_pal_conv_ctrl) |
+                        (1 << dma_chan_copy);
         while (dma_hw->abort) tight_loop_contents();
 
         // Disable PIO state machines
@@ -441,9 +496,17 @@ static inline bool hdmi_init(void) {
     pio_sm_init(PIO_VIDEO, SM_video, offs_prg0, &c_c);
     pio_sm_set_enabled(PIO_VIDEO, SM_video, true);
 
-    // DMA line buffers sit at the tail of conv_color
+    // DMA line buffers sit at the tail of conv_color (104 words each)
     dma_lines[0] = &conv_color[1024];
-    dma_lines[1] = &conv_color[1124];
+    dma_lines[1] = &conv_color[1128];
+
+    // Pre-fill both line buffers with blanking data so the very first
+    // scanlines output valid HDMI sync instead of random TMDS garbage.
+    for (int b = 0; b < 2; b++) {
+        uint8_t *buf = (uint8_t *)dma_lines[b];
+        nf_memset(buf + 48, BASE_HDMI_CTRL_INX, 360);
+        nf_memset(buf, BASE_HDMI_CTRL_INX + 1, 48);
+    }
 
     // Main scanline data DMA channel
     dma_channel_config cfg_dma = dma_channel_get_default_config(dma_chan);
@@ -461,7 +524,7 @@ static inline bool hdmi_init(void) {
         dma_chan, &cfg_dma,
         &PIO_VIDEO_ADDR->txf[SM_conv],
         &dma_lines[0][0],
-        400,
+        408,
         false
     );
 
@@ -553,12 +616,29 @@ void graphics_init(bool defer_irq) {
     dma_chan = dma_claim_unused_channel(true);
     dma_chan_pal_conv_ctrl = dma_claim_unused_channel(true);
     dma_chan_pal_conv = dma_claim_unused_channel(true);
+    dma_chan_copy = dma_claim_unused_channel(true);
+
+    // One-time configuration for the copy channel config object
+    dma_conf_copy = dma_channel_get_default_config(dma_chan_copy);
+    channel_config_set_transfer_data_size(&dma_conf_copy, DMA_SIZE_32);
+    channel_config_set_read_increment(&dma_conf_copy, true);
+    channel_config_set_write_increment(&dma_conf_copy, true);
+    channel_config_set_high_priority(&dma_conf_copy, false); // Normal priority to yield to Video DMA
 
     printf("HDMI: SM_video=%u, SM_conv=%u\n", SM_video, SM_conv);
-    printf("HDMI: DMA channels: ctrl=%u, data=%u, pal_ctrl=%u, pal=%u\n",
-        dma_chan_ctrl, dma_chan, dma_chan_pal_conv_ctrl, dma_chan_pal_conv);
+    printf("HDMI: DMA channels: ctrl=%u, data=%u, pal_ctrl=%u, pal=%u, copy=%u\n",
+        dma_chan_ctrl, dma_chan, dma_chan_pal_conv_ctrl, dma_chan_pal_conv, dma_chan_copy);
 
     hdmi_init();
+
+    // Configure the copy channel but don't start it yet
+    dma_channel_configure(
+        dma_chan_copy, &dma_conf_copy,
+        NULL, // Write addr set later
+        NULL, // Read addr set later
+        SCREEN_WIDTH / 4,
+        false // Don't start
+    );
 
     printf("HDMI: Init complete\n");
 }

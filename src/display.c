@@ -24,8 +24,9 @@ static const uint32_t default_palette[16] = {
 };
 
 // Double-buffered framebuffers (320 × 240, pair-encoded)
-static uint8_t framebuffer_a[FB_STRIDE * FB_HEIGHT];
-static uint8_t framebuffer_b[FB_STRIDE * FB_HEIGHT];
+#include <stdalign.h>
+static alignas(4) uint8_t framebuffer_a[FB_STRIDE * FB_HEIGHT];
+static alignas(4) uint8_t framebuffer_b[FB_STRIDE * FB_HEIGHT];
 
 static uint8_t *draw_buffer = framebuffer_b;
 static uint8_t *show_buffer = framebuffer_a;

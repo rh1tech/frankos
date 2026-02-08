@@ -37,12 +37,17 @@ target_link_libraries(hdmi_driver
     hardware_irq
 )
 
+# PS/2 drivers
+add_subdirectory(drivers/ps2)
+add_subdirectory(drivers/ps2kbd)
+
 # Main executable
 add_executable(rhea
     src/main.c
     src/display.c
     src/font.c
     src/gfx.c
+    src/cursor.c
     src/window.c
     src/window_event.c
     src/window_draw.c
@@ -50,12 +55,18 @@ add_executable(rhea
 target_include_directories(rhea PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}/src
     ${CMAKE_CURRENT_LIST_DIR}/drivers/hdmi
+    ${CMAKE_CURRENT_LIST_DIR}/drivers/ps2
+    ${CMAKE_CURRENT_LIST_DIR}/drivers/ps2kbd
 )
 target_link_libraries(rhea
     hdmi_driver
+    ps2_driver
+    ps2kbd
     pico_stdlib
     pico_multicore
     hardware_clocks
+    hardware_pio
+    hardware_gpio
     FreeRTOS-Kernel-Heap4
 )
 
