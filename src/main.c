@@ -9,6 +9,7 @@
 #include "board_config.h"
 #include "display.h"
 #include "hdmi.h"
+#include "window.h"
 
 #define LED_PIN PICO_DEFAULT_LED_PIN
 
@@ -60,6 +61,7 @@ static void heartbeat_task(void *params) {
 
 static void display_task(void *params) {
     (void)params;
+    /* Static frame — suspend to isolate HDMI signal issue */
     vTaskSuspend(NULL);
 }
 
@@ -82,9 +84,15 @@ int main(void) {
     display_init();
     printf("Display initialized\n"); stdio_flush();
 
-    display_draw_test_pattern();
-    display_swap_buffers();
-    printf("Test pattern swapped to front buffer\n"); stdio_flush();
+    wm_init();
+
+    hwnd_t test_win = wm_create_window(100, 80, 300, 200,
+                                        "Test Window", WSTYLE_DEFAULT,
+                                        NULL, NULL);
+    wm_set_focus(test_win);
+    printf("Test window created (hwnd=%d)\n", test_win); stdio_flush();
+
+    wm_composite();
 
     multicore_launch_core1(core1_entry);
     sleep_ms(100);

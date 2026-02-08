@@ -41,6 +41,11 @@ target_link_libraries(hdmi_driver
 add_executable(rhea
     src/main.c
     src/display.c
+    src/font.c
+    src/gfx.c
+    src/window.c
+    src/window_event.c
+    src/window_draw.c
 )
 target_include_directories(rhea PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}/src

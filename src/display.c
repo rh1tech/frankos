@@ -67,6 +67,11 @@ void display_swap_buffers(void) {
     graphics_request_buffer_swap(show_buffer);
 }
 
+void display_wait_vsync(void) {
+    uint32_t frame = get_frame_count();
+    while (get_frame_count() == frame) { tight_loop_contents(); }
+}
+
 void display_draw_test_pattern(void) {
     // 16 vertical color bars, each 20 bytes wide (40 pixels in 640 mode)
     // Each byte has identical left/right nibbles: (color << 4) | color

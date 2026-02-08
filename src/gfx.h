@@ -1,0 +1,42 @@
+#ifndef GFX_H
+#define GFX_H
+
+#include <stdint.h>
+#include <stdbool.h>
+
+/* Low-level screen-coordinate drawing primitives.
+ * These operate directly on the display draw buffer via display_set_pixel.
+ * No clipping to window boundaries — caller is responsible. */
+
+/* Horizontal line: y fixed, x from x0 to x0+w-1 */
+void gfx_hline(int x, int y, int w, uint8_t color);
+
+/* Vertical line: x fixed, y from y0 to y0+h-1 */
+void gfx_vline(int x, int y, int h, uint8_t color);
+
+/* Filled rectangle */
+void gfx_fill_rect(int x, int y, int w, int h, uint8_t color);
+
+/* Outline rectangle (1px border) */
+void gfx_rect(int x, int y, int w, int h, uint8_t color);
+
+/* Single character at (x,y) using 8x16 font, fg on bg */
+void gfx_char(int x, int y, char c, uint8_t fg, uint8_t bg);
+
+/* Null-terminated string, left-to-right, 8px per char */
+void gfx_text(int x, int y, const char *str, uint8_t fg, uint8_t bg);
+
+/* Filled rectangle with screen-coordinate clipping to a clip rect.
+ * Only pixels within (cx, cy, cw, ch) are drawn. */
+void gfx_fill_rect_clipped(int x, int y, int w, int h, uint8_t color,
+                            int cx, int cy, int cw, int ch);
+
+/* Single character with clipping — only pixels inside clip rect are drawn */
+void gfx_char_clipped(int x, int y, char c, uint8_t fg, uint8_t bg,
+                       int cx, int cy, int cw, int ch);
+
+/* Text string with clipping */
+void gfx_text_clipped(int x, int y, const char *str, uint8_t fg, uint8_t bg,
+                       int cx, int cy, int cw, int ch);
+
+#endif /* GFX_H */

@@ -14,6 +14,7 @@ void display_init(void);
 void display_set_pixel(int x, int y, uint8_t color);
 void display_clear(uint8_t color);
 void display_swap_buffers(void);
+void display_wait_vsync(void);
 void display_draw_test_pattern(void);
 
 #endif

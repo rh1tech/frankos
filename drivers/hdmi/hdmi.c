@@ -66,7 +66,23 @@ static uint offs_prg1 = 0;
 static int SM_video = -1;
 static int SM_conv = -1;
 
-#define BASE_HDMI_CTRL_INX (240)
+/*
+ * Sync-control palette index base.
+ *
+ * The pair-encoded framebuffer uses all 256 byte values (16×16 color pairs).
+ * Entries BASE through BASE+3 are overwritten with HDMI sync/control tokens
+ * by write_sync_control_entries(), so those 4 byte values MUST NOT appear in
+ * the active video area of the framebuffer.
+ *
+ * Byte value = (left_nibble << 4) | right_nibble.  Choosing BASE = 208
+ * (0xD0-0xD3) sacrifices the pairs (13,0), (13,1), (13,2), (13,3) —
+ * i.e. light-magenta paired with black/blue/green/cyan.
+ *
+ * Previously BASE was 240, which collided with (15,0)-(15,3) = white paired
+ * with black/blue/green/cyan — extremely common in desktop UI (white text on
+ * blue title bar produces byte 0xF1 = 241).
+ */
+#define BASE_HDMI_CTRL_INX (208)
 
 // DMA channels
 static int dma_chan_ctrl;
@@ -281,7 +297,7 @@ static inline void irq_set_exclusive_handler_DMA_core1() {
 
 static void graphics_set_palette_entry(uint8_t i, uint32_t color888) {
     // Skip sync control indices
-    if (i >= 240 && i <= 243) return;
+    if (i >= BASE_HDMI_CTRL_INX && i <= BASE_HDMI_CTRL_INX + 3) return;
 
     uint64_t* conv_color64 = (uint64_t *)conv_color;
     const uint8_t R = (color888 >> 16) & 0xff;
