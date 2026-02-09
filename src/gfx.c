@@ -3,8 +3,7 @@
 #include "font.h"
 
 void gfx_hline(int x, int y, int w, uint8_t color) {
-    for (int i = 0; i < w; i++)
-        display_set_pixel(x + i, y, color);
+    display_hline_safe(x, y, w, color);
 }
 
 void gfx_vline(int x, int y, int h, uint8_t color) {
@@ -13,9 +12,18 @@ void gfx_vline(int x, int y, int h, uint8_t color) {
 }
 
 void gfx_fill_rect(int x, int y, int w, int h, uint8_t color) {
-    for (int row = 0; row < h; row++)
-        for (int col = 0; col < w; col++)
-            display_set_pixel(x + col, y + row, color);
+    /* Clip to screen */
+    int x1 = x + w;
+    int y1 = y + h;
+    if (x < 0) x = 0;
+    if (y < 0) y = 0;
+    if (x1 > DISPLAY_WIDTH) x1 = DISPLAY_WIDTH;
+    if (y1 > FB_HEIGHT) y1 = FB_HEIGHT;
+    if (x >= x1 || y >= y1) return;
+    int cw = x1 - x;
+    color &= 0x0F;
+    for (int row = y; row < y1; row++)
+        display_hline_fast(x, row, cw, color);
 }
 
 void gfx_rect(int x, int y, int w, int h, uint8_t color) {
@@ -26,6 +34,15 @@ void gfx_rect(int x, int y, int w, int h, uint8_t color) {
 }
 
 void gfx_char(int x, int y, char c, uint8_t fg, uint8_t bg) {
+    /* Fast path: even x and fully on-screen */
+    if (!(x & 1) &&
+        x >= 0 && (x + FONT_WIDTH) <= DISPLAY_WIDTH &&
+        y >= 0 && (y + FONT_HEIGHT) <= FB_HEIGHT) {
+        display_blit_glyph_8wide(x, y, font_get_glyph(c),
+                                  FONT_HEIGHT, fg & 0x0F, bg & 0x0F);
+        return;
+    }
+    /* Fallback: per-pixel */
     const uint8_t *glyph = font_get_glyph(c);
     for (int row = 0; row < FONT_HEIGHT; row++) {
         uint8_t bits = glyph[row];
@@ -54,13 +71,32 @@ void gfx_fill_rect_clipped(int x, int y, int w, int h, uint8_t color,
 
     if (x0 >= x1 || y0 >= y1) return;
 
+    /* Also clip to screen */
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > DISPLAY_WIDTH) x1 = DISPLAY_WIDTH;
+    if (y1 > FB_HEIGHT) y1 = FB_HEIGHT;
+    if (x0 >= x1 || y0 >= y1) return;
+
+    int span = x1 - x0;
+    color &= 0x0F;
     for (int row = y0; row < y1; row++)
-        for (int col = x0; col < x1; col++)
-            display_set_pixel(col, row, color);
+        display_hline_fast(x0, row, span, color);
 }
 
 void gfx_char_clipped(int x, int y, char c, uint8_t fg, uint8_t bg,
                        int cx, int cy, int cw, int ch) {
+    /* Fast path: even x and fully inside clip rect and on-screen */
+    if (!(x & 1) &&
+        x >= cx && (x + FONT_WIDTH) <= (cx + cw) &&
+        y >= cy && (y + FONT_HEIGHT) <= (cy + ch) &&
+        x >= 0 && (x + FONT_WIDTH) <= DISPLAY_WIDTH &&
+        y >= 0 && (y + FONT_HEIGHT) <= FB_HEIGHT) {
+        display_blit_glyph_8wide(x, y, font_get_glyph(c),
+                                  FONT_HEIGHT, fg & 0x0F, bg & 0x0F);
+        return;
+    }
+    /* Fallback: per-pixel with clip */
     const uint8_t *glyph = font_get_glyph(c);
     int cx1 = cx + cw;
     int cy1 = cy + ch;

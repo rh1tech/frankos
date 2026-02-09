@@ -57,8 +57,8 @@ void wd_hline(int16_t x, int16_t y, int16_t w, uint8_t color) {
     if (y < 0 || y >= draw_ctx.ch) return;
     int16_t x0 = x < 0 ? 0 : x;
     int16_t x1 = (x + w) > draw_ctx.cw ? draw_ctx.cw : (x + w);
-    for (int16_t px = x0; px < x1; px++)
-        display_set_pixel(draw_ctx.ox + px, draw_ctx.oy + y, color);
+    if (x0 >= x1) return;
+    display_hline_safe(draw_ctx.ox + x0, draw_ctx.oy + y, x1 - x0, color);
 }
 
 void wd_vline(int16_t x, int16_t y, int16_t h, uint8_t color) {
@@ -83,9 +83,19 @@ void wd_fill_rect(int16_t x, int16_t y, int16_t w, int16_t h, uint8_t color) {
     int16_t y0 = y < 0 ? 0 : y;
     int16_t x1 = (x + w) > draw_ctx.cw ? draw_ctx.cw : (x + w);
     int16_t y1 = (y + h) > draw_ctx.ch ? draw_ctx.ch : (y + h);
-    for (int16_t py = y0; py < y1; py++)
-        for (int16_t px = x0; px < x1; px++)
-            display_set_pixel(draw_ctx.ox + px, draw_ctx.oy + py, color);
+    if (x0 >= x1 || y0 >= y1) return;
+    int sx = draw_ctx.ox + x0;
+    int sy = draw_ctx.oy + y0;
+    int span = x1 - x0;
+    int rows = y1 - y0;
+    if (sx < 0) { span += sx; sx = 0; }
+    if (sx + span > DISPLAY_WIDTH) span = DISPLAY_WIDTH - sx;
+    if (sy < 0) { rows += sy; sy = 0; }
+    if (sy + rows > FB_HEIGHT) rows = FB_HEIGHT - sy;
+    if (span <= 0 || rows <= 0) return;
+    color &= 0x0F;
+    for (int py = 0; py < rows; py++)
+        display_hline_fast(sx, sy + py, span, color);
 }
 
 void wd_clear(uint8_t color) {

@@ -100,43 +100,67 @@ static void terminal_paint(hwnd_t hwnd) {
     terminal_t *t = &g_terminal;
     if (t->hwnd != hwnd) return;
 
-    wd_begin(hwnd);
+    /* Compute client-area origin in screen coordinates directly,
+     * bypassing wd_begin/wd_end to avoid per-pixel clipping overhead. */
+    window_t *win = wm_get_window(hwnd);
+    if (!win) return;
+    int ox, oy;
+    if (win->flags & WF_BORDER) {
+        point_t origin = theme_client_origin(&win->frame);
+        ox = origin.x;
+        oy = origin.y;
+    } else {
+        ox = win->frame.x;
+        oy = win->frame.y;
+    }
 
-    /* Draw character grid from text-mode buffer */
+    /* Draw character grid using fast glyph blitter */
     for (int row = 0; row < TERM_ROWS; row++) {
+        int sy = oy + row * TERM_FONT_H;
+        if (sy + TERM_FONT_H <= 0 || sy >= FB_HEIGHT) continue;
+
         for (int col = 0; col < TERM_COLS; col++) {
+            int sx = ox + col * TERM_FONT_W;
+            if (sx + TERM_FONT_W <= 0 || sx >= DISPLAY_WIDTH) continue;
+
             uint8_t ch   = TB_CHAR(t, row, col);
             uint8_t attr = TB_ATTR(t, row, col);
             uint8_t fg   = TB_FG(attr);
             uint8_t bg   = TB_BG(attr);
 
-            int px = col * TERM_FONT_W;
-            int py = row * TERM_FONT_H;
-
-            /* Draw using 8x16 font */
             const uint8_t *glyph = font8x16_get_glyph(ch);
-            for (int gr = 0; gr < TERM_FONT_H; gr++) {
-                uint8_t bits = glyph[gr];
-                for (int gc = 0; gc < TERM_FONT_W; gc++) {
-                    wd_pixel(px + gc, py + gr,
-                             (bits & (1 << gc)) ? fg : bg);
+
+            /* Fast path: even x and fully on-screen */
+            if (!(sx & 1) &&
+                sx >= 0 && (sx + TERM_FONT_W) <= DISPLAY_WIDTH &&
+                sy >= 0 && (sy + TERM_FONT_H) <= FB_HEIGHT) {
+                display_blit_glyph_8wide(sx, sy, glyph, TERM_FONT_H, fg, bg);
+            } else {
+                /* Fallback: per-pixel for partially clipped chars */
+                for (int gr = 0; gr < TERM_FONT_H; gr++) {
+                    int py = sy + gr;
+                    if ((unsigned)py >= (unsigned)FB_HEIGHT) continue;
+                    uint8_t bits = glyph[gr];
+                    for (int gc = 0; gc < TERM_FONT_W; gc++) {
+                        int px = sx + gc;
+                        if ((unsigned)px >= (unsigned)DISPLAY_WIDTH) continue;
+                        display_set_pixel_fast(px, py,
+                                               (bits & (1 << gc)) ? fg : bg);
+                    }
                 }
             }
         }
     }
 
-    /* Draw blinking block cursor */
+    /* Draw blinking block cursor using fast hline */
     if (t->cursor_visible &&
         t->cursor_col >= 0 && t->cursor_col < TERM_COLS &&
         t->cursor_row >= 0 && t->cursor_row < TERM_ROWS) {
-        int cx = t->cursor_col * TERM_FONT_W;
-        int cy = t->cursor_row * TERM_FONT_H;
+        int cx = ox + t->cursor_col * TERM_FONT_W;
+        int cy = oy + t->cursor_row * TERM_FONT_H;
         for (int r = 0; r < TERM_FONT_H; r++)
-            for (int c = 0; c < TERM_FONT_W; c++)
-                wd_pixel(cx + c, cy + r, t->fg_color);
+            display_hline_safe(cx, cy + r, TERM_FONT_W, t->fg_color);
     }
-
-    wd_end();
 }
 
 /*==========================================================================
