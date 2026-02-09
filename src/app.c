@@ -832,18 +832,10 @@ a:
     }
     printf("[load_app] file opened, size=%lu, heap=%u\n",
            (unsigned long)f->obj.objsize, (unsigned)xPortGetFreeHeapSize());
-    bool try_to_use_flash = ctx->forse_flash;
-    if (!try_to_use_flash) {
-        size_t free_sz = xPortGetFreeHeapSize();
-        if (free_sz < (f->obj.objsize >> 1)) {
-            try_to_use_flash = true;
-            gouta("Attempt to use flash (by size)\n");
-            goutf("     free: %d\n", free_sz);
-            goutf(" required: %dK\n", (size_t)(f->obj.objsize >> 11));
-        }
-    } else {
-        gouta("Attempt to use flash (Alt+Enter)\n");
-    }
+    /* Flash loading disabled on Rhea: Core 1 runs bare-metal HSTX DMA
+     * without the SDK multicore lockout handler, so flash_block() would
+     * hang at multicore_lockout_start_blocking(). */
+    bool try_to_use_flash = false;
     printf("[load_app] try_flash=%d\n", try_to_use_flash);
     elf32_header* pehdr = (elf32_header*)pvPortMalloc(sizeof(elf32_header));
     if (!pehdr) {

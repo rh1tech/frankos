@@ -55,4 +55,7 @@ terminal_t *terminal_get_active(void);
 uint8_t *terminal_get_textbuf(terminal_t *t);
 size_t   terminal_get_textbuf_size(terminal_t *t);
 
+/* Force repaint of the active terminal (call after direct textbuf writes) */
+void terminal_invalidate_active(void);
+
 #endif /* TERMINAL_H */

@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include "sys_table.h"
 #include "__stdlib.h"
+#include "terminal.h"
 
 const char TEMP[] = "TEMP";
 const char _mc_con[] = ".mc.con";
@@ -669,6 +670,8 @@ void __in_hfa() op_console(cmd_ctx_t* ctx, FRFpvUpU_ptr_t fn, BYTE mode) {
     fn(pfh, get_buffer(), sz, &rb);
     f_close(pfh);
     printf("[op_console] done rb=%u\n", rb);
+    /* After restoring textbuf from file, repaint the terminal */
+    terminal_invalidate_active();
 r:
     vPortFree(pfh);
     vPortFree(mc_con_file);

@@ -383,3 +383,8 @@ uint8_t *terminal_get_textbuf(terminal_t *t) {
 size_t terminal_get_textbuf_size(terminal_t *t) {
     return t ? t->textbuf_size : 0;
 }
+
+void terminal_invalidate_active(void) {
+    terminal_t *t = terminal_get_active();
+    if (t) wm_invalidate(t->hwnd);
+}
