@@ -9,6 +9,7 @@
 #include "ff.h"
 #include "graphics.h"
 #include "keyboard.h"
+#include "terminal.h"
 #include "usb.h"
 #include "sys_table.h"
 #include "unistd.h"
@@ -1174,6 +1175,10 @@ static void __in_hfa() vAppDetachedTask(void *pv) {
     goutf("vAppDetachedTask: %s [%p]\n", ctx->orig_cmd, ctx);
     #endif
     vTaskSetThreadLocalStoragePointer(th, 0, ctx);
+    /* Propagate terminal to this task via TLS */
+    if (ctx->term) {
+        terminal_set_task_terminal(ctx->term);
+    }
     exec_sync(ctx);
     /* === RESET GLOBAL INPUT HANDLERS === */
     set_usb_detached_handler(0);
@@ -1196,6 +1201,10 @@ static void __in_hfa() vAppAttachedTask(void *pv) {
     const TaskHandle_t th = xTaskGetCurrentTaskHandle();
     ctx->task = th;
     vTaskSetThreadLocalStoragePointer(th, 0, ctx);
+    /* Propagate terminal to this task via TLS */
+    if (ctx->term) {
+        terminal_set_task_terminal(ctx->term);
+    }
     exec_sync(ctx);
     #if DEBUG_APP_LOAD
     goutf("xTaskNotifyGive [%p]->[%p]\n", ctx, ctx->parent_task);

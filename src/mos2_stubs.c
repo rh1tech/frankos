@@ -24,6 +24,8 @@
 
 /*==========================================================================
  * Global variable: keyboard character (MOS2 keyboard.c uses this)
+ * Kept for backward compatibility — keyboard.c still writes to it.
+ * Per-terminal code should use terminal_t.mos2_c instead.
  *=========================================================================*/
 volatile int __c = 0;
 
@@ -84,9 +86,19 @@ void gbackspace(void) {
 }
 
 char __getch(void) {
-    /* MOS2 mechanism: block until the scancode handler sets __c */
+    /* MOS2 mechanism: block until the scancode handler sets mos2_c */
+    terminal_t *t = terminal_get_active();
     TaskHandle_t th = xTaskGetCurrentTaskHandle();
     kbd_add_stdin_waiter(th);
+    if (t) {
+        while (!t->mos2_c) {
+            ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(50));
+        }
+        char c = (char)(t->mos2_c & 0xFF);
+        t->mos2_c = 0;
+        return c;
+    }
+    /* Fallback: use global __c if no terminal (shouldn't happen) */
     while (!__c) {
         ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(50));
     }
@@ -107,10 +119,11 @@ int __getc(FIL *f) {
 }
 
 char getch_now(void) {
-    /* MOS2 mechanism: non-blocking read of __c set by scancode handler */
-    if (__c) {
-        char c = (char)(__c & 0xFF);
-        __c = 0;
+    /* MOS2 mechanism: non-blocking read of mos2_c set by scancode handler */
+    terminal_t *t = terminal_get_active();
+    if (t && t->mos2_c) {
+        char c = (char)(t->mos2_c & 0xFF);
+        t->mos2_c = 0;
         return c;
     }
     /* On MOS2, keyboard scancodes are processed in a PIO ISR that preempts

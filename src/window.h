@@ -106,12 +106,13 @@ struct window {
     char             title[24];       /* null-terminated title string */
     event_handler_t  event_handler;   /* event callback (may be NULL) */
     paint_handler_t  paint_handler;   /* paint callback (may be NULL) */
+    void            *user_data;       /* opaque per-window data (e.g. terminal_t*) */
 };
 
 /* Size check — only meaningful on the 32-bit ARM target.
  * On 64-bit hosts (where clangd runs) pointers are 8 bytes. */
 #if defined(__arm__) || defined(__thumb__)
-_Static_assert(sizeof(window_t) <= 56, "window_t exceeds 56 bytes");
+_Static_assert(sizeof(window_t) <= 60, "window_t exceeds 60 bytes");
 #endif
 
 /*==========================================================================

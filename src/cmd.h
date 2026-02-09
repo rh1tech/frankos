@@ -13,6 +13,12 @@ extern "C" {
 #include "../api/m-os-api-c-list.h"
 #include "../api/m-os-api-c-array.h"
 
+/* Forward declaration — terminal_t is defined in terminal.h */
+#ifndef TERMINAL_T_DEFINED
+#define TERMINAL_T_DEFINED
+typedef struct terminal terminal_t;
+#endif
+
 size_t get_heap_total();
 
 char* get_curr_dir(); // old system
@@ -110,6 +116,7 @@ typedef struct cmd_ctx {
     array_t /*of DIR*/ *pdirs; // open directories per process
     list_t /*of void*/ *pallocs; // related to the process allocations
     int proc_errno;
+    terminal_t *term;   /* owning terminal for this process */
 } cmd_ctx_t;
 
 cmd_ctx_t* get_cmd_startup_ctx(); // system

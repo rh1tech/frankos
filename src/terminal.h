@@ -5,6 +5,11 @@
 #include <stddef.h>
 #include <stdbool.h>
 #include "window.h"
+#include "keyboard.h"
+#include "FreeRTOS.h"
+#include "task.h"
+#include "semphr.h"
+#include "timers.h"
 
 /* Terminal console dimensions (8x16 font in 560x320 client area) */
 #define TERM_COLS   70
@@ -20,10 +25,63 @@
  */
 #define TERM_TEXTBUF_SIZE   (TERM_COLS * TERM_ROWS * 2)  /* 4800 bytes */
 
+/* Maximum stdin waiters per terminal (MOS2 apps) */
+#define MAX_STDIN_WAITERS 4
+
+/* FreeRTOS TLS slot for per-task terminal pointer */
+#define TERMINAL_TLS_SLOT 1
+
+#ifndef TERMINAL_T_DEFINED
+#define TERMINAL_T_DEFINED
 typedef struct terminal terminal_t;
+#endif
+
+struct terminal {
+    /* Unified text-mode buffer — IS the MOS2 screen buffer */
+    uint8_t *textbuf;
+    size_t   textbuf_size;
+
+    int      cursor_col, cursor_row;
+    uint8_t  fg_color, bg_color;
+    bool     cursor_visible;
+
+    /* Keyboard input ring buffer (for terminal_getch) */
+    uint8_t  input_buf[64];
+    uint8_t  in_head, in_tail;
+    SemaphoreHandle_t input_sem;
+
+    /* Window handle */
+    hwnd_t   hwnd;
+
+    /* Cursor blink timer */
+    TimerHandle_t blink_timer;
+
+    /* MOS2 keyboard state — per-terminal */
+    volatile int           mos2_c;                  /* replaces global __c */
+    scancode_handler_t     mos2_scancode_handler;   /* replaces global g_scancode_handler */
+    cp866_handler_t        mos2_cp866_handler;      /* replaces global g_cp866_handler */
+    TaskHandle_t           mos2_stdin_waiters[MAX_STDIN_WAITERS];
+    int                    mos2_num_stdin_waiters;
+
+    /* Closing flag — set by WM_CLOSE handler, checked by shell task */
+    volatile bool          closing;
+};
 
 /* Create a terminal window. Returns the window handle. */
 hwnd_t terminal_create(void);
+
+/* Destroy a terminal: stop blink timer, destroy window, free memory */
+void terminal_destroy(terminal_t *t);
+
+/* Look up a terminal from its window handle */
+terminal_t *terminal_from_hwnd(hwnd_t hwnd);
+
+/* Get the window handle from a terminal */
+hwnd_t terminal_get_hwnd(terminal_t *t);
+
+/* Per-task terminal via FreeRTOS TLS */
+void terminal_set_task_terminal(terminal_t *t);
+terminal_t *terminal_get_task_terminal(void);
 
 /* Console output */
 void terminal_putc(terminal_t *t, char c);
@@ -48,7 +106,9 @@ int terminal_get_cursor_row(terminal_t *t);
 int terminal_getch(terminal_t *t);       /* blocking */
 int terminal_getch_now(terminal_t *t);   /* non-blocking, -1 if none */
 
-/* Get the active terminal (for routing API calls) */
+/* Get the active terminal (for routing API calls):
+ * 1. Try TLS slot for current task
+ * 2. Fall back to focused window's terminal */
 terminal_t *terminal_get_active(void);
 
 /* Text-mode buffer access (for MOS2 get_buffer() / save/restore console) */
@@ -57,5 +117,8 @@ size_t   terminal_get_textbuf_size(terminal_t *t);
 
 /* Force repaint of the active terminal (call after direct textbuf writes) */
 void terminal_invalidate_active(void);
+
+/* Notify per-terminal stdin waiters (called from keyboard.c) */
+void terminal_notify_stdin_ready(terminal_t *t);
 
 #endif /* TERMINAL_H */
