@@ -36,4 +36,19 @@
 #define PS2_MOUSE_CLK  0
 #define PS2_MOUSE_DATA 1
 
+//=============================================================================
+// SD Card (SPI0, GPIO 4-7)
+//=============================================================================
+#define SDCARD_PIN_CLK  6   /* SPI0 SCK */
+#define SDCARD_PIN_CMD  7   /* SPI0 TX / MOSI */
+#define SDCARD_PIN_D0   4   /* SPI0 RX / MISO */
+#define SDCARD_PIN_D3   5   /* SPI0 CSn */
+
+//=============================================================================
+// Audio (not connected on Rhea — stubs for MOS2 compat)
+//=============================================================================
+#define PWM_PIN0    20
+#define PWM_PIN1    21
+#define BEEPER_PIN  22
+
 #endif // BOARD_CONFIG_H

@@ -4,6 +4,7 @@
 #include "pico/multicore.h"
 #include "hardware/clocks.h"
 #include "hardware/gpio.h"
+#include "hardware/structs/qmi.h"
 #include "tusb.h"
 #include "FreeRTOS.h"
 #include "task.h"
@@ -13,6 +14,10 @@
 #include "window_event.h"
 #include "ps2.h"
 #include "keyboard.h"
+#include "sdcard_init.h"
+#include "terminal.h"
+#include "shell.h"
+#include "disphstx.h"
 
 #define LED_PIN PICO_DEFAULT_LED_PIN
 
@@ -24,9 +29,37 @@ static inline void led_init(void) {
     gpio_set_dir(LED_PIN, GPIO_OUT);
 }
 
-// Hard fault handler — double-blink pattern using raw SIO (no SDK calls).
+// Hard fault handler — prints fault info to USB serial, then blinks LED.
 // Named isr_hardfault to override the weak symbol in Pico SDK's vector table.
-void __attribute__((used)) isr_hardfault(void) {
+void __attribute__((used, naked)) isr_hardfault(void) {
+    __asm volatile(
+        "tst lr, #4         \n"
+        "ite eq              \n"
+        "mrseq r0, msp       \n"
+        "mrsne r0, psp       \n"
+        "mov r1, lr          \n"
+        "b hardfault_c_handler \n"
+    );
+}
+
+void __attribute__((used)) hardfault_c_handler(uint32_t *stack, uint32_t lr_val) {
+    uint32_t pc  = stack[6];
+    uint32_t lr  = stack[5];
+    // Write fault info to watchdog scratch registers (survive reset)
+    volatile uint32_t *SCRATCH = (volatile uint32_t *)0x40058000;
+    // watchdog_hw->scratch[0..7] at offsets 0x0C..0x28
+    // Use direct register addresses for scratch[0..5]
+    SCRATCH[3] = 0xDEAD0001;  // scratch[0] = magic
+    SCRATCH[4] = pc;           // scratch[1] = faulting PC
+    SCRATCH[5] = lr;           // scratch[2] = LR
+    SCRATCH[6] = lr_val;       // scratch[3] = EXC_LR
+    SCRATCH[7] = (uint32_t)stack; // scratch[4] = SP
+    // Fault status registers
+    volatile uint32_t *CFSR  = (volatile uint32_t *)0xE000ED28;
+    volatile uint32_t *HFSR  = (volatile uint32_t *)0xE000ED2C;
+    SCRATCH[8] = *CFSR;       // scratch[5] = CFSR
+    SCRATCH[9] = *HFSR;       // scratch[6] = HFSR
+    // Blink LED as visual indicator
     *(volatile unsigned int *)0xd0000038 = (1u << 25);
     for (;;) {
         for (int b = 0; b < 2; b++) {
@@ -68,7 +101,9 @@ static void compositor_task(void *params) {
     (void)params;
 
     for (;;) {
-        if (g_video_dirty) {
+        /* Recomposite when input arrives OR when windows are
+         * invalidated (e.g. terminal output, cursor blink). */
+        if (g_video_dirty || wm_needs_composite()) {
             g_video_dirty = false;
 
             wm_dispatch_events();
@@ -94,7 +129,29 @@ static void input_task(void *params) {
 
         key_event_t kev;
         while (keyboard_get_event(&kev)) {
-            (void)kev; /* TODO: route keyboard events to WM */
+            window_event_t we = {0};
+            if (kev.pressed) {
+                /* Send WM_KEYDOWN for all key presses */
+                we.type = WM_KEYDOWN;
+                we.key.scancode = kev.hid_code;
+                we.key.modifiers = 0;
+                if (kev.modifiers & KBD_MOD_SHIFT) we.key.modifiers |= KMOD_SHIFT;
+                if (kev.modifiers & KBD_MOD_CTRL)  we.key.modifiers |= KMOD_CTRL;
+                if (kev.modifiers & KBD_MOD_ALT)   we.key.modifiers |= KMOD_ALT;
+                wm_post_event_focused(&we);
+
+                /* Also send WM_CHAR for printable ASCII */
+                if (kev.ascii >= 0x20 && kev.ascii <= 0x7E) {
+                    we.type = WM_CHAR;
+                    we.charev.ch = kev.ascii;
+                    wm_post_event_focused(&we);
+                }
+            } else {
+                we.type = WM_KEYUP;
+                we.key.scancode = kev.hid_code;
+                wm_post_event_focused(&we);
+            }
+            g_video_dirty = true;
         }
 
         /* Poll mouse */
@@ -144,10 +201,32 @@ int main(void) {
         set_sys_clock_khz(252 * 1000, true);
     }
 
+    /* Remap XIP ATRANS3 so that address 0x10FFF000 maps to flash 0x3FF000.
+     * MOS2 apps read function pointers from a sys_table at 0x10FFF000.
+     * On 4MB flash, that address is beyond physical flash (returns 0xFF).
+     * ATRANS3 covers 0x10C00000–0x10FFFFFF. Setting BASE=0 maps this
+     * window to flash 0x000000–0x3FFFFF, so 0x10FFF000 → flash 0x3FF000. */
+    qmi_hw->atrans[3] = (0x400u << QMI_ATRANS3_SIZE_LSB)
+                       | (0x000u << QMI_ATRANS3_BASE_LSB);
+
     stdio_init_all();
     for (int i = 0; i < 8; i++) { sleep_ms(500); }
 
     led_init();
+
+    // Check for saved HardFault info from previous crash
+    {
+        volatile uint32_t *S = (volatile uint32_t *)0x40058000;
+        if (S[3] == 0xDEAD0001) {
+            printf("\n!!! PREVIOUS HARDFAULT !!!\n");
+            printf("PC  = %08lX\n", S[4]);
+            printf("LR  = %08lX\n", S[5]);
+            printf("EXC_LR = %08lX  SP = %08lX\n", S[6], S[7]);
+            printf("CFSR = %08lX  HFSR = %08lX\n", S[8], S[9]);
+            stdio_flush();
+            S[3] = 0;  // clear magic so we don't print again
+        }
+    }
 
     printf("\n== Rhea OS ==\n");
     printf("CPU: %lu MHz\n", (unsigned long)(clock_get_hz(clk_sys) / 1000000));
@@ -175,11 +254,29 @@ int main(void) {
 
     wm_init();
 
-    hwnd_t test_win = wm_create_window(100, 80, 300, 200,
-                                        "Test Window", WSTYLE_DEFAULT,
-                                        NULL, NULL);
-    wm_set_focus(test_win);
-    printf("Test window created (hwnd=%d)\n", test_win); stdio_flush();
+    /* Mount SD card */
+    printf("Mounting SD card...\n"); stdio_flush();
+    if (sdcard_mount()) {
+        printf("SD card mounted\n");
+    } else {
+        printf("SD card mount failed (continuing without SD)\n");
+    }
+    stdio_flush();
+
+    /* Install multicore lockout handler on Core 1 so flash_block() can
+     * safely pause Core 1 during flash erase/program operations.
+     * Done after SD mount to avoid SIO FIFO IRQ interfering with SPI init. */
+    DispHstxCore1Exec(multicore_lockout_victim_init);
+    DispHstxCore1Wait();
+
+    /* Create terminal window */
+    hwnd_t term_win = terminal_create();
+    wm_set_focus(term_win);
+    printf("Terminal created (hwnd=%d)\n", term_win); stdio_flush();
+
+    /* Start shell on the terminal (runs as a FreeRTOS task) */
+    terminal_t *term = terminal_get_active();
+    shell_start(term);
 
     /* One-shot composite so the first frame is visible */
     wm_composite();

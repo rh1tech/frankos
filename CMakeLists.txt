@@ -24,34 +24,108 @@ add_subdirectory(lib/DispHSTX DispHSTX)
 # Unified PS/2 driver (keyboard + mouse)
 add_subdirectory(drivers/ps2)
 
+# FatFS filesystem library
+add_subdirectory(drivers/fatfs)
+
+# SD card SPI driver
+include(drivers/sdcard/sdcard.cmake)
+
+# Collect MOS2 musl source files
+file(GLOB MUSL_SRC "src/musl/*.c")
+
+# Collect MOS2 posix.1 source files
+file(GLOB POSIX_SRC "src/posix.1/*.c" "src/posix.1/sys/*.c")
+
 # Main executable
 add_executable(rhea
+    # Rhea core
     src/main.c
     src/display.c
     src/keyboard.c
-    src/font.c
+    src/font8x8.c
+    src/font8x16.c
     src/gfx.c
     src/cursor.c
     src/window.c
     src/window_event.c
     src/window_draw.c
+    src/sdcard_init.c
+    src/terminal.c
+    src/shell.c
+
+    # MOS2 core (copied from murmulator-os2)
+    src/app.c
+    src/cmd.c
+    src/sys_table.c
+    src/math-wrapper.c
+    src/hooks.c
+    src/overclock.c
+    src/ram_page.c
+    src/sound.c
+    src/freertos_ext.c
+    src/mos2_stubs.c
+
+    # MOS2 POSIX / musl / obsd
+    ${MUSL_SRC}
+    ${POSIX_SRC}
+    src/obsd/fts.c
 )
 target_include_directories(rhea PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}/src
     ${CMAKE_CURRENT_LIST_DIR}/drivers/ps2
+    ${CMAKE_CURRENT_LIST_DIR}/drivers/fatfs
+    ${CMAKE_CURRENT_LIST_DIR}/src/posix.1/include
+    ${CMAKE_CURRENT_LIST_DIR}/src/musl/include
+    ${CMAKE_CURRENT_LIST_DIR}/src/musl/internal
+    ${CMAKE_CURRENT_LIST_DIR}/src/obsd/include
 )
 
 # Force-include our DispHSTX config so the library sees it before its own _config.h
 target_compile_options(rhea PRIVATE -include ${CMAKE_CURRENT_LIST_DIR}/src/config.h)
 
+# MOS2 code uses int↔ptr casts extensively; relax these warnings
+target_compile_options(rhea PRIVATE
+    -Wno-int-conversion
+    -Wno-incompatible-pointer-types
+    -Wno-discarded-qualifiers
+    -Wno-pointer-sign
+    -Wno-implicit-function-declaration
+)
+
+# MOS2 compile definitions
+target_compile_definitions(rhea PRIVATE
+    FIRMWARE_OFFSET=256
+    M_API_VERSION=27
+    MIN_API_VERSION=14
+    RESERVED_RAM=512
+    OS_FLASH_SIZE=256
+    OVERCLOCKING=378
+    PWM_PIN0=20
+    PWM_PIN1=21
+    BEEPER_PIN=22
+)
+
 target_link_libraries(rhea
     DispHSTX
     ps2_driver
+    sdcard
     pico_stdlib
     pico_multicore
     hardware_clocks
     hardware_gpio
+    hardware_spi
+    hardware_pwm
+    hardware_flash
+    hardware_watchdog
     FreeRTOS-Kernel-Heap4
+)
+
+# Place MOS2 system function table at flash address 0x103FF000.
+# On RP2350 with 4MB flash, reads from 0x10FFF000 (the canonical MOS2 address)
+# wrap to physical flash offset 0x3FF000, which is where this table lives.
+target_link_options(rhea PRIVATE
+    -Wl,--section-start=.sys_table=0x103FF000
+    -Wl,--undefined=sys_table_ptrs
 )
 
 # USB output for printf, no UART

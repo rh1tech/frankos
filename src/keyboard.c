@@ -9,7 +9,10 @@
 
 #include "keyboard.h"
 #include "ps2.h"
+#include "FreeRTOS.h"
+#include "task.h"
 #include <string.h>
+#include <stdio.h>
 
 //=============================================================================
 // HID Key Codes (subset used by the scancode tables)
@@ -422,10 +425,15 @@ static void process_scancode(uint8_t byte) {
 // Public API
 //=============================================================================
 
+static void mos2_feed_scancode(uint8_t byte); /* defined below */
+
 void keyboard_poll(void) {
     int byte;
     int limit = 32; // don't spin forever
     while (limit-- > 0 && (byte = ps2_kbd_get_byte()) >= 0) {
+        /* Feed to MOS2 scancode handler (PS/2 set 2 → XT conversion) */
+        mos2_feed_scancode((uint8_t)byte);
+        /* Feed to Rhea windowing system (PS/2 set 2 → HID) */
         process_scancode((uint8_t)byte);
     }
 }
@@ -435,4 +443,414 @@ bool keyboard_get_event(key_event_t *ev) {
     *ev = key_queue[kq_tail];
     kq_tail = (kq_tail + 1) % KEY_QUEUE_SIZE;
     return true;
+}
+
+/*==========================================================================
+ * MOS2 keyboard API — scancode handler + stdin waiter notification
+ *
+ * MOS2 apps install a custom scancode handler via set_scancode_handler().
+ * They then call kbd_add_stdin_waiter() and block on ulTaskNotifyTake().
+ * When a key arrives, the handler processes the XT scancode, sets __c,
+ * and we notify all waiting tasks via xTaskNotifyGive().
+ *=========================================================================*/
+
+static scancode_handler_t g_scancode_handler = NULL;
+static cp866_handler_t g_cp866_handler = NULL;
+
+void set_scancode_handler(scancode_handler_t h) { printf("[set_scancode_handler] %p\n", h); g_scancode_handler = h; }
+void set_cp866_handler(cp866_handler_t h) { g_cp866_handler = h; }
+scancode_handler_t get_scancode_handler(void) { printf("[get_scancode_handler] -> %p\n", g_scancode_handler); return g_scancode_handler; }
+cp866_handler_t get_cp866_handler(void) { return g_cp866_handler; }
+void kbd_set_stdin_owner(long pid) { (void)pid; }
+
+/* Stdin waiters — tasks blocked on ulTaskNotifyTake waiting for keyboard */
+#define MAX_STDIN_WAITERS 4
+static TaskHandle_t stdin_waiters[MAX_STDIN_WAITERS];
+static int num_stdin_waiters = 0;
+
+void kbd_add_stdin_waiter(void *th) {
+    TaskHandle_t h = (TaskHandle_t)th;
+    for (int i = 0; i < num_stdin_waiters; i++) {
+        if (stdin_waiters[i] == h) return; /* already registered */
+    }
+    if (num_stdin_waiters < MAX_STDIN_WAITERS) {
+        stdin_waiters[num_stdin_waiters++] = h;
+    }
+}
+
+void kbd_remove_stdin_waiter(void *th) {
+    TaskHandle_t h = (TaskHandle_t)th;
+    for (int i = 0; i < num_stdin_waiters; i++) {
+        if (stdin_waiters[i] == h) {
+            stdin_waiters[i] = stdin_waiters[--num_stdin_waiters];
+            return;
+        }
+    }
+}
+
+static void kbd_notify_stdin_ready(void) {
+    for (int i = 0; i < num_stdin_waiters; i++) {
+        if (stdin_waiters[i]) {
+            xTaskNotifyGive(stdin_waiters[i]);
+        }
+    }
+}
+
+/*==========================================================================
+ * MOS2 default scancode handler
+ *
+ * This is a port of MOS2's handleScancode().  It converts XT scancodes
+ * to CP866 characters, sets the global __c, and notifies stdin waiters.
+ * The app's custom scancode_handler is called at the end, after the
+ * default processing — matching MOS2's architecture.
+ *=========================================================================*/
+
+/* __c is the MOS2 global "last character typed" — defined in mos2_stubs.c */
+extern volatile int __c;
+
+/* MOS2 character codes used by apps (mc checks for these) */
+#define CHAR_CODE_BS    8
+#define CHAR_CODE_UP    17
+#define CHAR_CODE_DOWN  18
+#define CHAR_CODE_ENTER '\n'
+#define CHAR_CODE_TAB   '\t'
+#define CHAR_CODE_ESC   0x1B
+
+#define PS2_LED_NUM_LOCK 0x02
+
+/* MOS2 keyboard state */
+static kbd_state_t ks = { 0 };
+
+kbd_state_t *get_kbd_state(void) { return &ks; }
+
+/*--- XT scancode → CP866 lookup tables (86 entries each) ---*/
+
+static const char scan_code_2_cp866_a[] = {
+     0 ,  0 , '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=',  0 ,'\t',
+    'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', '[', ']','\n',  0 , 'a', 's',
+    'd', 'f', 'g', 'h', 'j', 'k', 'l', ';','\'', '`',  0 ,'\\', 'z', 'x', 'c', 'v',
+    'b', 'n', 'm', ',', '.', '/',  0 , '*',  0 , ' ',  0 ,  0 ,  0 ,  0 ,  0 ,  0 ,
+     0 ,  0 ,  0 ,  0 ,  0 ,  0 ,  0 , '7', '8', '9', '-', '4', '5', '6', '+', '1',
+    '2', '3', '0', '.', '/',  0
+};
+static const char scan_code_2_cp866_A[] = {
+     0 ,  0 , '!', '@', '#', '$', '%', '^', '&', '*', '(', ')', '_', '+',  0 ,'\t',
+    'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', '{', '}','\n',  0 , 'A', 'S',
+    'D', 'F', 'G', 'H', 'J', 'K', 'L', ':', '"', '~',  0 , '|', 'Z', 'X', 'C', 'V',
+    'B', 'N', 'M', '<', '>', '?',  0 , '*',  0 , ' ',  0 ,  0 ,  0 ,  0 ,  0 ,  0 ,
+     0 ,  0 ,  0 ,  0 ,  0 ,  0 ,  0 , '7', '8', '9', '-', '4', '5', '6', '+', '1',
+    '2', '3', '0', '.', '/',  0
+};
+static const char scan_code_2_cp866_aCL[] = {
+     0 ,  0 , '!', '@', '#', '$', '%', '^', '&', '*', '(', ')', '_', '+',  0 ,'\t',
+    'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', '[', ']','\n',  0 , 'a', 's',
+    'd', 'f', 'g', 'h', 'j', 'k', 'l', ':', '"', '~',  0 , '|', 'z', 'x', 'c', 'v',
+    'b', 'n', 'm', '<', '>', '?',  0 , '*',  0 , ' ',  0 ,  0 ,  0 ,  0 ,  0 ,  0 ,
+     0 ,  0 ,  0 ,  0 ,  0 ,  0 ,  0 , '7', '8', '9', '-', '4', '5', '6', '+', '1',
+    '2', '3', '0', '.', '/',  0
+};
+static const char scan_code_2_cp866_ACL[] = {
+     0 ,  0 , '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=',  0 ,'\t',
+    'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', '{', '}','\n',  0 , 'A', 'S',
+    'D', 'F', 'G', 'H', 'J', 'K', 'L', ';','\'', '`',  0 ,'\\', 'Z', 'X', 'C', 'V',
+    'B', 'N', 'M', ',', '.', '/',  0 , '*',  0 , ' ',  0 ,  0 ,  0 ,  0 ,  0 ,  0 ,
+     0 ,  0 ,  0 ,  0 ,  0 ,  0 ,  0 , '7', '8', '9', '-', '4', '5', '6', '+', '1',
+    '2', '3', '0', '.', '/',  0
+};
+static const char scan_code_2_cp866_ra[] = {
+     0 ,  0 , '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=',  0 ,'\t',
+   0xA9,0xE6,0xE3,0xAA,0xA5,0xAD,0xA3,0xE8,0xE9,0xA7,0xE5,0xEA,'\n',  0 ,0xE4,0xEB,
+   0xA2,0xA0,0xAF,0xE0,0xAE,0xAB,0xA4,0xA6,0xED,0xF1,  0 ,'\\',0xEF,0xE7,0xE1,0xAC,
+   0xA8,0xE2,0xEC,0xA1,0xEE, ',',  0 , '*',  0 , ' ',  0 ,  0 ,  0 ,  0 ,  0 ,  0 ,
+     0 ,  0 ,  0 ,  0 ,  0 ,  0 ,  0 , '7', '8', '9', '-', '4', '5', '6', '+', '1',
+    '2', '3', '0', '.', '/',  0
+};
+static const char scan_code_2_cp866_rA[] = {
+     0 ,  0 , '!', '"',0xFC, ';', '%', ':', '?', '*', '(', ')', '_', '+',  0 ,'\t',
+   0x89,0x96,0x93,0x8A,0x85,0x8D,0x83,0x98,0x99,0x87,0x95,0x9A,'\n',  0 ,0x94,0x9B,
+   0x82,0x80,0x8F,0x90,0x8E,0x8B,0x84,0x86,0x9D,0xF0,  0 , '/',0x9F,0x97,0x91,0x8C,
+   0x88,0x92,0x9C,0x81,0x9E, '.',  0 , '*',  0 , ' ',  0 ,  0 ,  0 ,  0 ,  0 ,  0 ,
+     0 ,  0 ,  0 ,  0 ,  0 ,  0 ,  0 , '7', '8', '9', '-', '4', '5', '6', '+', '1',
+    '2', '3', '0', '.', '/',  0
+};
+static const char scan_code_2_cp866_raCL[] = {
+     0 ,  0 , '!', '"',0xFC, ';', '%', ':', '?', '*', '(', ')', '_', '+',  0 ,'\t',
+   0xA9,0xE6,0xE3,0xAA,0xA5,0xAD,0xA3,0xE8,0xE9,0xA7,0xE5,0xEA,'\n',  0 ,0xE4,0xEB,
+   0xA2,0xA0,0xAF,0xE0,0xAE,0xAB,0xA4,0xA6,0xED,0xF1,  0 , '/',0xEF,0xE7,0xE1,0xAC,
+   0xA8,0xE2,0xEC,0xA1,0xEE, ',',  0 , '*',  0 , ' ',  0 ,  0 ,  0 ,  0 ,  0 ,  0 ,
+     0 ,  0 ,  0 ,  0 ,  0 ,  0 ,  0 , '7', '8', '9', '-', '4', '5', '6', '+', '1',
+    '2', '3', '0', '.', '/',  0
+};
+static const char scan_code_2_cp866_rACL[] = {
+     0 ,  0 , '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=',  0 ,'\t',
+   0x89,0x96,0x93,0x8A,0x85,0x8D,0x83,0x98,0x99,0x87,0x95,0x9A,'\n',  0 ,0x94,0x9B,
+   0x82,0x80,0x8F,0x90,0x8E,0x8B,0x84,0x86,0x9D,0xF0,  0 ,'\\',0x9F,0x97,0x91,0x8C,
+   0x88,0x92,0x9C,0x81,0x9E, '.',  0 , '*',  0 , ' ',  0 ,  0 ,  0 ,  0 ,  0 ,  0 ,
+     0 ,  0 ,  0 ,  0 ,  0 ,  0 ,  0 , '7', '8', '9', '-', '4', '5', '6', '+', '1',
+    '2', '3', '0', '.', '/',  0
+};
+
+/* Alt+numpad decimal entry — convert "123" → char(123) */
+static char tricode2c(char tricode[4], size_t s) {
+    unsigned int r = 0;
+    for (int pos = s - 1; pos >= 0; pos--) {
+        int bs = s - 1 - pos;
+        unsigned int dShift = bs == 2 ? 100 : (bs == 1 ? 10 : 1);
+        r += (tricode[pos] - '0') * dShift;
+    }
+    tricode[0] = 0;
+    return (char)(r & 0xFF);
+}
+
+/*
+ * Default MOS2 scancode handler — ported from MOS2 keyboard.c handleScancode().
+ *
+ * Takes an XT scancode, tracks modifier state, converts to CP866 character,
+ * sets __c, notifies stdin waiters, then calls the app's custom scancode_handler.
+ */
+static void default_mos2_handler(uint32_t ps2scancode) {
+    static char tricode[4] = {0};
+    size_t s;
+    char c = 0;
+
+    ks.input = ps2scancode;
+
+    /* Arrow keys (when NumLock is off) → character codes */
+    if ((ps2scancode == 0xE048 || ps2scancode == 0x48) &&
+        !(get_leds_stat() & PS2_LED_NUM_LOCK)) {
+        ks.input = 0;
+        if (g_cp866_handler) g_cp866_handler(CHAR_CODE_UP, ps2scancode);
+        __c = CHAR_CODE_UP;
+        kbd_notify_stdin_ready();
+        goto ex;
+    }
+    if ((ps2scancode == 0xE050 || ps2scancode == 0x50) &&
+        !(get_leds_stat() & PS2_LED_NUM_LOCK)) {
+        ks.input = 0;
+        if (g_cp866_handler) g_cp866_handler(CHAR_CODE_DOWN, ps2scancode);
+        __c = CHAR_CODE_DOWN;
+        kbd_notify_stdin_ready();
+        goto ex;
+    }
+
+    /* Numpad Enter */
+    if (ps2scancode == 0xE09C) {
+        if (g_cp866_handler) g_cp866_handler(CHAR_CODE_ENTER, ps2scancode);
+        __c = CHAR_CODE_ENTER;
+        kbd_notify_stdin_ready();
+        goto ex;
+    }
+
+    switch ((uint8_t)(ks.input & 0xFF)) {
+    case 0x81: /* ESC release */
+        if (g_cp866_handler) g_cp866_handler(CHAR_CODE_ESC, ps2scancode);
+        __c = CHAR_CODE_ESC;
+        kbd_notify_stdin_ready();
+        goto ex;
+    case 0x1D: /* Ctrl press */
+        ks.bCtrlPressed = true;
+        if (ks.bRightShift || ks.bLeftShift) ks.bRus = !ks.bRus;
+        break;
+    case 0x9D: /* Ctrl release */
+        ks.bCtrlPressed = false;
+        break;
+    case 0x38: /* Alt press */
+        ks.bAltPressed = true;
+        break;
+    case 0xB8: /* Alt release — finalize tricode if any */
+        ks.bAltPressed = false;
+        s = strlen(tricode);
+        if (s) {
+            c = tricode2c(tricode, s);
+            __c = c;
+            kbd_notify_stdin_ready();
+            goto ex;
+        }
+        break;
+    case 0x53: /* Del press */
+        ks.bDelPressed = true;
+        break;
+    case 0xD3: /* Del release */
+        ks.bDelPressed = false;
+        break;
+    case 0x2A: /* Left Shift press */
+        ks.bLeftShift = true;
+        if (ks.bCtrlPressed) ks.bRus = !ks.bRus;
+        break;
+    case 0xAA: /* Left Shift release */
+        ks.bLeftShift = false;
+        break;
+    case 0x36: /* Right Shift press */
+        ks.bRightShift = true;
+        if (ks.bCtrlPressed) ks.bRus = !ks.bRus;
+        break;
+    case 0xB6: /* Right Shift release */
+        ks.bRightShift = false;
+        break;
+    case 0x3A: /* CapsLock toggle */
+        ks.bCapsLock = !ks.bCapsLock;
+        break;
+    case 0x0E: /* Backspace */
+        if (g_cp866_handler) g_cp866_handler(CHAR_CODE_BS, ps2scancode);
+        __c = CHAR_CODE_BS;
+        kbd_notify_stdin_ready();
+        goto ex;
+    case 0x0F: /* Tab press */
+        ks.bTabPressed = true;
+        break;
+    case 0x8F: /* Tab release */
+        ks.bTabPressed = false;
+        break;
+    case 0x0C: /* - press */
+    case 0x4A: /* numpad - press */
+        ks.bMinusPressed = true;
+        break;
+    case 0x8C: /* - release */
+    case 0xCA: /* numpad - release */
+        ks.bMinusPressed = false;
+        break;
+    case 0x0D: /* += press */
+    case 0x4E: /* numpad + press */
+        ks.bPlusPressed = true;
+        break;
+    case 0x8D: /* += release */
+    case 0xCE: /* numpad + release */
+        ks.bPlusPressed = false;
+        break;
+    default:
+        break;
+    }
+
+    /* Character lookup — only for make codes with index < 86 */
+    if (c || ks.input < 86) {
+        if (!c) {
+            const char *table;
+            if (ks.bRus) {
+                if (!ks.bCapsLock)
+                    table = (ks.bRightShift || ks.bLeftShift) ? scan_code_2_cp866_rA : scan_code_2_cp866_ra;
+                else
+                    table = (ks.bRightShift || ks.bLeftShift) ? scan_code_2_cp866_raCL : scan_code_2_cp866_rACL;
+            } else {
+                if (!ks.bCapsLock)
+                    table = (ks.bRightShift || ks.bLeftShift) ? scan_code_2_cp866_A : scan_code_2_cp866_a;
+                else
+                    table = (ks.bRightShift || ks.bLeftShift) ? scan_code_2_cp866_aCL : scan_code_2_cp866_ACL;
+            }
+            c = table[ks.input];
+        }
+        if (c) {
+            /* Alt+numpad decimal entry */
+            if (ks.bAltPressed && c >= '0' && c <= '9') {
+                s = strlen(tricode);
+                if (s == 3) {
+                    c = tricode2c(tricode, s);
+                } else {
+                    tricode[s++] = c;
+                    tricode[s] = 0;
+                    goto ex;
+                }
+            }
+        }
+        if (g_cp866_handler) g_cp866_handler(c, ps2scancode);
+        if (ks.bCtrlPressed && ps2scancode == 0x2E) {
+            /* Ctrl+C → EOF */
+            __c = -1;
+        } else {
+            __c = c;
+        }
+        kbd_notify_stdin_ready();
+    }
+
+ex:
+    if (g_scancode_handler) {
+        g_scancode_handler(ps2scancode);
+    }
+}
+
+/*==========================================================================
+ * PS/2 Set 2 → XT (Set 1) scancode conversion
+ *
+ * MOS2 scancode handlers expect XT-format scancodes.
+ * XT make codes are single bytes; release = make | 0x80.
+ * Extended keys (E0 prefix) are passed as 0xE0XX.
+ *=========================================================================*/
+
+/* PS/2 Set 2 make code → XT Set 1 make code (indices 0x00–0x83) */
+static const uint8_t ps2_to_xt[] = {
+    0xFF, 0x43, 0x00, 0x3F, 0x3D, 0x3B, 0x3C, 0x58, /* 00-07 */
+    0x64, 0x44, 0x42, 0x40, 0x3E, 0x0F, 0x29, 0x00, /* 08-0F */
+    0x65, 0x38, 0x2A, 0x00, 0x1D, 0x10, 0x02, 0x00, /* 10-17 */
+    0x66, 0x00, 0x2C, 0x1F, 0x1E, 0x11, 0x03, 0x00, /* 18-1F */
+    0x67, 0x2E, 0x2D, 0x20, 0x12, 0x05, 0x04, 0x00, /* 20-27 */
+    0x68, 0x39, 0x2F, 0x21, 0x14, 0x13, 0x06, 0x00, /* 28-2F */
+    0x69, 0x31, 0x30, 0x23, 0x22, 0x15, 0x07, 0x00, /* 30-37 */
+    0x6A, 0x00, 0x32, 0x24, 0x16, 0x08, 0x09, 0x00, /* 38-3F */
+    0x6B, 0x33, 0x25, 0x17, 0x18, 0x0B, 0x0A, 0x00, /* 40-47 */
+    0x6C, 0x34, 0x35, 0x26, 0x27, 0x19, 0x0C, 0x00, /* 48-4F */
+    0x6D, 0x00, 0x28, 0x00, 0x1A, 0x0D, 0x00, 0x00, /* 50-57 */
+    0x3A, 0x36, 0x1C, 0x1B, 0x00, 0x2B, 0x00, 0x00, /* 58-5F */
+    0x00, 0x56, 0x00, 0x00, 0x00, 0x00, 0x0E, 0x00, /* 60-67 */
+    0x00, 0x4F, 0x00, 0x4B, 0x47, 0x00, 0x00, 0x00, /* 68-6F */
+    0x52, 0x53, 0x50, 0x4C, 0x4D, 0x48, 0x01, 0x45, /* 70-77 */
+    0x57, 0x4E, 0x51, 0x4A, 0x37, 0x49, 0x46, 0x00, /* 78-7F */
+    0x00, 0x00, 0x00, 0x41,                          /* 80-83 */
+};
+
+/* Extended PS/2 Set 2 (after E0) → XT extended code */
+static uint8_t ps2_ext_to_xt(uint8_t code) {
+    switch (code) {
+        case 0x11: return 0x38; /* Right Alt */
+        case 0x14: return 0x1D; /* Right Ctrl */
+        case 0x1F: return 0x5B; /* Left GUI */
+        case 0x27: return 0x5C; /* Right GUI */
+        case 0x4A: return 0x35; /* Keypad / */
+        case 0x5A: return 0x1C; /* Keypad Enter */
+        case 0x69: return 0x4F; /* End */
+        case 0x6B: return 0x4B; /* Left Arrow */
+        case 0x6C: return 0x47; /* Home */
+        case 0x70: return 0x52; /* Insert */
+        case 0x71: return 0x53; /* Delete */
+        case 0x72: return 0x50; /* Down Arrow */
+        case 0x74: return 0x4D; /* Right Arrow */
+        case 0x75: return 0x48; /* Up Arrow */
+        case 0x7A: return 0x51; /* Page Down */
+        case 0x7D: return 0x49; /* Page Up */
+        default:   return 0x00;
+    }
+}
+
+/* State machine for PS/2 → XT conversion (separate from the HID state machine) */
+static bool xt_extended = false;
+static bool xt_release  = false;
+
+static void mos2_feed_scancode(uint8_t byte) {
+    /* Skip protocol bytes */
+    if (byte == 0xAA || byte == 0xFC || byte == 0xFE ||
+        byte == 0xFA || byte == 0xEE)
+        return;
+
+    if (byte == 0xE0) { xt_extended = true; return; }
+    if (byte == 0xF0) { xt_release  = true; return; }
+    if (byte == 0xE1) return; /* Pause key — ignore */
+
+    /* Convert PS/2 set 2 → XT set 1 */
+    uint32_t xt_code;
+    if (xt_extended) {
+        uint8_t xt = ps2_ext_to_xt(byte);
+        if (xt == 0) { xt_extended = false; xt_release = false; return; }
+        xt_code = 0xE000 | xt;
+        if (xt_release) xt_code |= 0x80; /* release bit on low byte */
+    } else {
+        if (byte >= sizeof(ps2_to_xt)) { xt_release = false; return; }
+        uint8_t xt = ps2_to_xt[byte];
+        if (xt == 0 || xt == 0xFF) { xt_release = false; return; }
+        xt_code = xt;
+        if (xt_release) xt_code |= 0x80;
+    }
+    xt_extended = false;
+    xt_release  = false;
+
+    /* Run the default MOS2 handler (converts to char, sets __c,
+     * then calls the app's custom scancode_handler at the end) */
+    default_mos2_handler(xt_code);
 }

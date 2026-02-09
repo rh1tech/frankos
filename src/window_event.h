@@ -231,9 +231,9 @@ void wm_dispatch_events(void);
  * x,y  = screen coordinates */
 void wm_handle_mouse_input(uint8_t type, int16_t x, int16_t y, uint8_t buttons);
 
-/* Query active drag state for outline drawing.
- * Returns true if a drag is in progress, fills output params. */
-bool wm_get_drag_outline(hwnd_t *hwnd, int16_t *dx, int16_t *dy);
+/* Query active drag/resize state for outline drawing.
+ * Returns true if a move or resize is in progress, fills outline rect. */
+bool wm_get_drag_outline(rect_t *outline);
 
 /*==========================================================================
  * Input state queries

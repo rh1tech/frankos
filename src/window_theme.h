@@ -17,6 +17,9 @@
 #define THEME_MIN_W          80
 #define THEME_MIN_H          40
 
+/* Corner resize grab zone (pixels from corner edge) */
+#define THEME_RESIZE_GRAB     6
+
 /*==========================================================================
  * Color scheme
  *=========================================================================*/
@@ -135,6 +138,21 @@ static inline uint8_t theme_hit_test(const rect_t *frame, uint8_t flags,
         return HT_CLIENT;
     }
 
+    /* Corner resize zones — wider grab area, checked first so corners
+     * take priority over the title bar and client area. */
+    if (flags & WF_RESIZABLE) {
+        int16_t cg = THEME_RESIZE_GRAB;
+        bool cl = lx < cg;
+        bool cr = lx >= frame->w - cg;
+        bool ct = ly < cg;
+        bool cb = ly >= frame->h - cg;
+
+        if (ct && cl) return HT_BORDER_TL;
+        if (ct && cr) return HT_BORDER_TR;
+        if (cb && cl) return HT_BORDER_BL;
+        if (cb && cr) return HT_BORDER_BR;
+    }
+
     /* Title bar area (between top border and client) */
     if (ly >= THEME_BORDER_WIDTH &&
         ly < THEME_BORDER_WIDTH + THEME_TITLE_HEIGHT &&
@@ -175,16 +193,12 @@ static inline uint8_t theme_hit_test(const rect_t *frame, uint8_t flags,
         return HT_CLIENT;
     }
 
-    /* Border zones */
-    bool left  = lx < THEME_BORDER_WIDTH;
-    bool right = lx >= frame->w - THEME_BORDER_WIDTH;
-    bool top   = ly < THEME_BORDER_WIDTH;
+    /* Edge border zones */
+    bool left   = lx < THEME_BORDER_WIDTH;
+    bool right  = lx >= frame->w - THEME_BORDER_WIDTH;
+    bool top    = ly < THEME_BORDER_WIDTH;
     bool bottom = ly >= frame->h - THEME_BORDER_WIDTH;
 
-    if (top && left)   return HT_BORDER_TL;
-    if (top && right)  return HT_BORDER_TR;
-    if (bottom && left)  return HT_BORDER_BL;
-    if (bottom && right) return HT_BORDER_BR;
     if (left)   return HT_BORDER_L;
     if (right)  return HT_BORDER_R;
     if (top)    return HT_BORDER_T;

@@ -1,0 +1,19 @@
+#ifndef SHELL_H
+#define SHELL_H
+
+#include "terminal.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* Start the built-in shell on a terminal.
+ * Spawns a FreeRTOS task that reads input from the terminal and
+ * executes commands (ELF apps from SD card or built-in commands). */
+void shell_start(terminal_t *term);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* SHELL_H */

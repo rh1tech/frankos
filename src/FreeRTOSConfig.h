@@ -16,7 +16,7 @@
 /* Memory */
 #define configSUPPORT_DYNAMIC_ALLOCATION        1
 #define configSUPPORT_STATIC_ALLOCATION         0
-#define configTOTAL_HEAP_SIZE                   ((size_t)(64 * 1024))
+#define configTOTAL_HEAP_SIZE                   ((size_t)(128 * 1024))
 #define configAPPLICATION_ALLOCATED_HEAP        0
 
 /* CPU */
@@ -28,7 +28,7 @@
 #define configUSE_IDLE_HOOK                     0
 #define configUSE_TICK_HOOK                     0
 #define configUSE_MALLOC_FAILED_HOOK            0
-#define configCHECK_FOR_STACK_OVERFLOW          0
+#define configCHECK_FOR_STACK_OVERFLOW          2
 
 /* Features */
 #define configUSE_MUTEXES                       1
@@ -36,12 +36,13 @@
 #define configUSE_RECURSIVE_MUTEXES             1
 #define configUSE_QUEUE_SETS                    0
 #define configUSE_TASK_NOTIFICATIONS            1
-#define configUSE_TRACE_FACILITY                0
+#define configUSE_TRACE_FACILITY                1
 #define configUSE_STATS_FORMATTING_FUNCTIONS    0
 
 /* Task */
 #define configMAX_TASK_NAME_LEN                 16
 #define configUSE_CO_ROUTINES                   0
+#define configNUM_THREAD_LOCAL_STORAGE_POINTERS 2
 
 /* Timer */
 #define configUSE_TIMERS                        1
@@ -78,6 +79,11 @@
 #define INCLUDE_xTaskGetSchedulerState          1
 #define INCLUDE_xTaskGetCurrentTaskHandle       1
 #define INCLUDE_xTimerPendFunctionCall          1
+#define INCLUDE_xTaskResumeFromISR              1
+#define INCLUDE_xTaskAbortDelay                 1
+#define INCLUDE_xTaskGetHandle                  1
+#define INCLUDE_uxTaskGetStackHighWaterMark     1
+#define INCLUDE_eTaskGetState                   1
 
 /* RP2350 port: use static exception handler linking (weak symbol override)
  * instead of runtime exception_set_exclusive_handler which can hard_assert

@@ -1,5 +1,6 @@
 #include "window_event.h"
 #include "window_theme.h"
+#include "cursor.h"
 #include "display.h"
 #include <string.h>
 #include "hardware/sync.h"
@@ -41,12 +42,18 @@ static volatile uint8_t mouse_buttons_live;
  * Starts dirty so the first frame is always drawn. */
 static volatile uint8_t compositor_dirty = 1;
 
-/* Drag state — managed by wm_handle_mouse_input() */
-static hwnd_t  drag_hwnd = HWND_NULL;   /* window being dragged */
-static int16_t drag_offset_x;            /* mouse-to-window-origin offset */
-static int16_t drag_offset_y;
-static int16_t drag_pos_x;              /* proposed position during drag */
-static int16_t drag_pos_y;
+/* Drag/resize state — managed by wm_handle_mouse_input() */
+#define DRAG_NONE    0
+#define DRAG_MOVE    1
+#define DRAG_RESIZE  2
+
+static uint8_t drag_mode  = DRAG_NONE;
+static hwnd_t  drag_hwnd  = HWND_NULL;
+static int16_t drag_anchor_x;            /* mouse position at drag start */
+static int16_t drag_anchor_y;
+static rect_t  drag_orig;                /* window rect at drag start */
+static rect_t  drag_rect;                /* proposed rect during drag */
+static uint8_t drag_edge;                /* HT_BORDER_* for resize */
 
 void wm_event_init(void) {
     int lock_num = spin_lock_claim_unused(true);
@@ -175,7 +182,7 @@ bool wm_needs_composite(void) {
 }
 
 /*==========================================================================
- * Mouse input handler — drag, focus, hit-test
+ * Mouse input handler — move, resize, focus, hit-test
  *=========================================================================*/
 
 static inline void forward_mouse_event(uint8_t type, int16_t x, int16_t y,
@@ -193,47 +200,132 @@ static inline void forward_mouse_event(uint8_t type, int16_t x, int16_t y,
     wm_post_event(target, &ev);
 }
 
+static void begin_drag(hwnd_t hwnd, uint8_t mode, uint8_t edge,
+                        int16_t mx, int16_t my) {
+    window_t *win = wm_get_window(hwnd);
+    if (!win) return;
+    drag_mode     = mode;
+    drag_hwnd     = hwnd;
+    drag_anchor_x = mx;
+    drag_anchor_y = my;
+    drag_orig     = win->frame;
+    drag_rect     = win->frame;
+    drag_edge     = edge;
+}
+
+static void update_resize_rect(int16_t mx, int16_t my) {
+    int16_t dx = mx - drag_anchor_x;
+    int16_t dy = my - drag_anchor_y;
+
+    drag_rect = drag_orig;
+
+    /* Adjust edges based on which border is being dragged */
+    switch (drag_edge) {
+        case HT_BORDER_R:
+            drag_rect.w += dx;
+            break;
+        case HT_BORDER_B:
+            drag_rect.h += dy;
+            break;
+        case HT_BORDER_L:
+            drag_rect.x += dx;
+            drag_rect.w -= dx;
+            break;
+        case HT_BORDER_T:
+            drag_rect.y += dy;
+            drag_rect.h -= dy;
+            break;
+        case HT_BORDER_BR:
+            drag_rect.w += dx;
+            drag_rect.h += dy;
+            break;
+        case HT_BORDER_BL:
+            drag_rect.x += dx;
+            drag_rect.w -= dx;
+            drag_rect.h += dy;
+            break;
+        case HT_BORDER_TR:
+            drag_rect.w += dx;
+            drag_rect.y += dy;
+            drag_rect.h -= dy;
+            break;
+        case HT_BORDER_TL:
+            drag_rect.x += dx;
+            drag_rect.w -= dx;
+            drag_rect.y += dy;
+            drag_rect.h -= dy;
+            break;
+    }
+
+    /* Enforce minimum size — clamp and fix position for left/top edges */
+    if (drag_rect.w < THEME_MIN_W) {
+        if (drag_edge == HT_BORDER_L || drag_edge == HT_BORDER_TL ||
+            drag_edge == HT_BORDER_BL) {
+            drag_rect.x = drag_orig.x + drag_orig.w - THEME_MIN_W;
+        }
+        drag_rect.w = THEME_MIN_W;
+    }
+    if (drag_rect.h < THEME_MIN_H) {
+        if (drag_edge == HT_BORDER_T || drag_edge == HT_BORDER_TL ||
+            drag_edge == HT_BORDER_TR) {
+            drag_rect.y = drag_orig.y + drag_orig.h - THEME_MIN_H;
+        }
+        drag_rect.h = THEME_MIN_H;
+    }
+}
+
+static cursor_type_t cursor_for_edge(uint8_t zone) {
+    switch (zone) {
+        case HT_BORDER_T:  case HT_BORDER_B:  return CURSOR_RESIZE_NS;
+        case HT_BORDER_L:  case HT_BORDER_R:  return CURSOR_RESIZE_EW;
+        case HT_BORDER_TL: case HT_BORDER_BR: return CURSOR_RESIZE_NWSE;
+        case HT_BORDER_TR: case HT_BORDER_BL: return CURSOR_RESIZE_NESW;
+        default: return CURSOR_ARROW;
+    }
+}
+
 void wm_handle_mouse_input(uint8_t type, int16_t x, int16_t y, uint8_t buttons) {
-    /* ---- Dragging in progress ---- */
-    if (drag_hwnd != HWND_NULL) {
+    /* ---- Active drag/resize in progress ---- */
+    if (drag_mode != DRAG_NONE) {
         if (type == WM_MOUSEMOVE) {
-            drag_pos_x = x - drag_offset_x;
-            drag_pos_y = y - drag_offset_y;
+            if (drag_mode == DRAG_MOVE) {
+                drag_rect.x = drag_orig.x + (x - drag_anchor_x);
+                drag_rect.y = drag_orig.y + (y - drag_anchor_y);
+            } else {
+                update_resize_rect(x, y);
+            }
             compositor_dirty = 1;
             return;
         }
         if (type == WM_LBUTTONUP) {
-            /* Drop: move window to final position */
-            wm_move_window(drag_hwnd, drag_pos_x, drag_pos_y);
+            /* Apply final rect */
+            wm_set_window_rect(drag_hwnd, drag_rect.x, drag_rect.y,
+                                drag_rect.w, drag_rect.h);
+            drag_mode = DRAG_NONE;
             drag_hwnd = HWND_NULL;
+            cursor_set_type(CURSOR_ARROW);
             compositor_dirty = 1;
             return;
         }
-        /* Other events during drag are ignored */
         return;
     }
 
     /* ---- Left button down: hit-test to decide action ---- */
     if (type == WM_LBUTTONDOWN) {
         hwnd_t target = wm_window_at_point(x, y);
-        if (target == HWND_NULL) return; /* clicked desktop */
+        if (target == HWND_NULL) return;
 
         window_t *win = wm_get_window(target);
         if (!win) return;
 
-        /* Focus and raise the clicked window */
         wm_set_focus(target);
 
         uint8_t zone = theme_hit_test(&win->frame, win->flags, x, y);
 
         switch (zone) {
             case HT_TITLEBAR:
-                if (win->flags & WF_MOVABLE) {
-                    drag_hwnd = target;
-                    drag_offset_x = x - win->frame.x;
-                    drag_offset_y = y - win->frame.y;
-                    drag_pos_x = win->frame.x;
-                    drag_pos_y = win->frame.y;
+                if ((win->flags & WF_MOVABLE) && win->state != WS_MAXIMIZED) {
+                    begin_drag(target, DRAG_MOVE, 0, x, y);
                 }
                 return;
 
@@ -243,6 +335,26 @@ void wm_handle_mouse_input(uint8_t type, int16_t x, int16_t y, uint8_t buttons) 
                     memset(&ev, 0, sizeof(ev));
                     ev.type = WM_CLOSE;
                     wm_post_event(target, &ev);
+                }
+                return;
+
+            case HT_MAXIMIZE:
+                if (win->flags & WF_RESIZABLE) {
+                    if (win->state == WS_MAXIMIZED)
+                        wm_restore_window(target);
+                    else
+                        wm_maximize_window(target);
+                    compositor_dirty = 1;
+                }
+                return;
+
+            case HT_BORDER_L:  case HT_BORDER_R:
+            case HT_BORDER_T:  case HT_BORDER_B:
+            case HT_BORDER_TL: case HT_BORDER_TR:
+            case HT_BORDER_BL: case HT_BORDER_BR:
+                if ((win->flags & WF_RESIZABLE) && win->state != WS_MAXIMIZED) {
+                    begin_drag(target, DRAG_RESIZE, zone, x, y);
+                    cursor_set_type(cursor_for_edge(zone));
                 }
                 return;
 
@@ -265,6 +377,19 @@ void wm_handle_mouse_input(uint8_t type, int16_t x, int16_t y, uint8_t buttons) 
 
     /* ---- Mouse move (not dragging) ---- */
     if (type == WM_MOUSEMOVE) {
+        /* Update cursor shape based on what's under the pointer */
+        cursor_type_t cur = CURSOR_ARROW;
+        hwnd_t hover = wm_window_at_point(x, y);
+        if (hover != HWND_NULL) {
+            window_t *hwin = wm_get_window(hover);
+            if (hwin && (hwin->flags & WF_RESIZABLE) &&
+                hwin->state != WS_MAXIMIZED) {
+                uint8_t zone = theme_hit_test(&hwin->frame, hwin->flags, x, y);
+                cur = cursor_for_edge(zone);
+            }
+        }
+        cursor_set_type(cur);
+
         hwnd_t focus = wm_get_focus();
         if (focus != HWND_NULL)
             forward_mouse_event(WM_MOUSEMOVE, x, y, buttons, focus);
@@ -280,10 +405,8 @@ void wm_handle_mouse_input(uint8_t type, int16_t x, int16_t y, uint8_t buttons) 
     }
 }
 
-bool wm_get_drag_outline(hwnd_t *hwnd, int16_t *dx, int16_t *dy) {
-    if (drag_hwnd == HWND_NULL) return false;
-    if (hwnd) *hwnd = drag_hwnd;
-    if (dx) *dx = drag_pos_x;
-    if (dy) *dy = drag_pos_y;
+bool wm_get_drag_outline(rect_t *outline) {
+    if (drag_mode == DRAG_NONE) return false;
+    if (outline) *outline = drag_rect;
     return true;
 }

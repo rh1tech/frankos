@@ -2,6 +2,7 @@
 #include "window_theme.h"
 #include "gfx.h"
 #include "display.h"
+#include "font.h"
 
 /*==========================================================================
  * Drawing context — tracks current window's clip rect and origin
@@ -42,62 +43,119 @@ void wd_end(void) {
 }
 
 /*==========================================================================
- * Primitives — stub implementations
+ * Primitives — clipped to client area
  *=========================================================================*/
 
 void wd_pixel(int16_t x, int16_t y, uint8_t color) {
-    (void)x; (void)y; (void)color;
-    /* TODO: implement with clipping */
+    if (!draw_ctx.active) return;
+    if (x < 0 || x >= draw_ctx.cw || y < 0 || y >= draw_ctx.ch) return;
+    display_set_pixel(draw_ctx.ox + x, draw_ctx.oy + y, color);
 }
 
 void wd_hline(int16_t x, int16_t y, int16_t w, uint8_t color) {
-    (void)x; (void)y; (void)w; (void)color;
-    /* TODO: implement */
+    if (!draw_ctx.active) return;
+    if (y < 0 || y >= draw_ctx.ch) return;
+    int16_t x0 = x < 0 ? 0 : x;
+    int16_t x1 = (x + w) > draw_ctx.cw ? draw_ctx.cw : (x + w);
+    for (int16_t px = x0; px < x1; px++)
+        display_set_pixel(draw_ctx.ox + px, draw_ctx.oy + y, color);
 }
 
 void wd_vline(int16_t x, int16_t y, int16_t h, uint8_t color) {
-    (void)x; (void)y; (void)h; (void)color;
-    /* TODO: implement */
+    if (!draw_ctx.active) return;
+    if (x < 0 || x >= draw_ctx.cw) return;
+    int16_t y0 = y < 0 ? 0 : y;
+    int16_t y1 = (y + h) > draw_ctx.ch ? draw_ctx.ch : (y + h);
+    for (int16_t py = y0; py < y1; py++)
+        display_set_pixel(draw_ctx.ox + x, draw_ctx.oy + py, color);
 }
 
 void wd_rect(int16_t x, int16_t y, int16_t w, int16_t h, uint8_t color) {
-    (void)x; (void)y; (void)w; (void)h; (void)color;
-    /* TODO: implement */
+    wd_hline(x, y, w, color);
+    wd_hline(x, y + h - 1, w, color);
+    wd_vline(x, y, h, color);
+    wd_vline(x + w - 1, y, h, color);
 }
 
 void wd_fill_rect(int16_t x, int16_t y, int16_t w, int16_t h, uint8_t color) {
-    (void)x; (void)y; (void)w; (void)h; (void)color;
-    /* TODO: implement */
+    if (!draw_ctx.active) return;
+    int16_t x0 = x < 0 ? 0 : x;
+    int16_t y0 = y < 0 ? 0 : y;
+    int16_t x1 = (x + w) > draw_ctx.cw ? draw_ctx.cw : (x + w);
+    int16_t y1 = (y + h) > draw_ctx.ch ? draw_ctx.ch : (y + h);
+    for (int16_t py = y0; py < y1; py++)
+        for (int16_t px = x0; px < x1; px++)
+            display_set_pixel(draw_ctx.ox + px, draw_ctx.oy + py, color);
 }
 
 void wd_clear(uint8_t color) {
-    (void)color;
-    /* TODO: implement — fill entire client area */
+    wd_fill_rect(0, 0, draw_ctx.cw, draw_ctx.ch, color);
 }
 
 void wd_char(int16_t x, int16_t y, char c, uint8_t fg, uint8_t bg) {
-    (void)x; (void)y; (void)c; (void)fg; (void)bg;
-    /* TODO: implement */
+    if (!draw_ctx.active) return;
+    gfx_char_clipped(draw_ctx.ox + x, draw_ctx.oy + y, c, fg, bg,
+                      draw_ctx.ox, draw_ctx.oy,
+                      draw_ctx.cw, draw_ctx.ch);
 }
 
 void wd_text(int16_t x, int16_t y, const char *str, uint8_t fg, uint8_t bg) {
-    (void)x; (void)y; (void)str; (void)fg; (void)bg;
-    /* TODO: implement */
+    while (*str) {
+        if (x + FONT_WIDTH > 0 && x < draw_ctx.cw)
+            wd_char(x, y, *str, fg, bg);
+        x += FONT_WIDTH;
+        str++;
+    }
 }
 
 void wd_text_transparent(int16_t x, int16_t y, const char *str, uint8_t fg) {
-    (void)x; (void)y; (void)str; (void)fg;
-    /* TODO: implement */
+    if (!draw_ctx.active) return;
+    const uint8_t *glyph;
+    int16_t cx1 = draw_ctx.cw;
+    int16_t cy1 = draw_ctx.ch;
+    while (*str) {
+        if (x + FONT_WIDTH > 0 && x < cx1) {
+            glyph = font_get_glyph(*str);
+            for (int row = 0; row < FONT_HEIGHT; row++) {
+                int16_t py = y + row;
+                if (py < 0 || py >= cy1) continue;
+                uint8_t bits = glyph[row];
+                for (int col = 0; col < FONT_WIDTH; col++) {
+                    int16_t px = x + col;
+                    if (px < 0 || px >= cx1) continue;
+                    if (bits & (1 << col))
+                        display_set_pixel(draw_ctx.ox + px,
+                                          draw_ctx.oy + py, fg);
+                }
+            }
+        }
+        x += FONT_WIDTH;
+        str++;
+    }
 }
 
 void wd_line(int16_t x0, int16_t y0, int16_t x1, int16_t y1, uint8_t color) {
-    (void)x0; (void)y0; (void)x1; (void)y1; (void)color;
-    /* TODO: implement Bresenham */
+    if (!draw_ctx.active) return;
+    int16_t dx = x1 > x0 ? x1 - x0 : x0 - x1;
+    int16_t dy = y1 > y0 ? y1 - y0 : y0 - y1;
+    int16_t sx = x0 < x1 ? 1 : -1;
+    int16_t sy = y0 < y1 ? 1 : -1;
+    int16_t err = dx - dy;
+
+    for (;;) {
+        wd_pixel(x0, y0, color);
+        if (x0 == x1 && y0 == y1) break;
+        int16_t e2 = 2 * err;
+        if (e2 > -dy) { err -= dy; x0 += sx; }
+        if (e2 <  dx) { err += dx; y0 += sy; }
+    }
 }
 
 void wd_bevel_rect(int16_t x, int16_t y, int16_t w, int16_t h,
                     uint8_t light, uint8_t dark, uint8_t face) {
-    (void)x; (void)y; (void)w; (void)h;
-    (void)light; (void)dark; (void)face;
-    /* TODO: implement 3D bevel */
+    wd_fill_rect(x + 1, y + 1, w - 2, h - 2, face);
+    wd_hline(x, y, w, light);
+    wd_vline(x, y, h, light);
+    wd_hline(x, y + h - 1, w, dark);
+    wd_vline(x + w - 1, y, h, dark);
 }

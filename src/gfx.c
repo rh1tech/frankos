@@ -27,14 +27,11 @@ void gfx_rect(int x, int y, int w, int h, uint8_t color) {
 
 void gfx_char(int x, int y, char c, uint8_t fg, uint8_t bg) {
     const uint8_t *glyph = font_get_glyph(c);
-    if (!glyph) glyph = font_get_glyph('?');
-    if (!glyph) return;
-
     for (int row = 0; row < FONT_HEIGHT; row++) {
         uint8_t bits = glyph[row];
         for (int col = 0; col < FONT_WIDTH; col++) {
             display_set_pixel(x + col, y + row,
-                              (bits & (0x80 >> col)) ? fg : bg);
+                              (bits & (1 << col)) ? fg : bg);
         }
     }
 }
@@ -65,9 +62,6 @@ void gfx_fill_rect_clipped(int x, int y, int w, int h, uint8_t color,
 void gfx_char_clipped(int x, int y, char c, uint8_t fg, uint8_t bg,
                        int cx, int cy, int cw, int ch) {
     const uint8_t *glyph = font_get_glyph(c);
-    if (!glyph) glyph = font_get_glyph('?');
-    if (!glyph) return;
-
     int cx1 = cx + cw;
     int cy1 = cy + ch;
 
@@ -78,7 +72,7 @@ void gfx_char_clipped(int x, int y, char c, uint8_t fg, uint8_t bg,
         for (int col = 0; col < FONT_WIDTH; col++) {
             int px = x + col;
             if (px < cx || px >= cx1) continue;
-            display_set_pixel(px, py, (bits & (0x80 >> col)) ? fg : bg);
+            display_set_pixel(px, py, (bits & (1 << col)) ? fg : bg);
         }
     }
 }

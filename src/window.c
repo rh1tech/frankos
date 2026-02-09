@@ -123,8 +123,8 @@ void wm_maximize_window(hwnd_t hwnd) {
         win->restore_rect = win->frame;
     }
     win->state = WS_MAXIMIZED;
+    win->frame = (rect_t){ 0, 0, DISPLAY_WIDTH, DISPLAY_HEIGHT };
     win->flags |= WF_DIRTY;
-    /* TODO: set frame to full screen minus decorations */
 }
 
 void wm_restore_window(hwnd_t hwnd) {
@@ -304,6 +304,21 @@ static void draw_maximize_glyph(const rect_t *btn) {
     gfx_hline(bx, by + 1, bw, COLOR_BLACK); /* thick top edge */
 }
 
+static void draw_restore_glyph(const rect_t *btn) {
+    /* Two overlapping small rectangles (classic Windows restore icon) */
+    int bx = btn->x + 3;
+    int by = btn->y + 2;
+    int bw = btn->w - 7;
+    int bh = btn->h - 5;
+    /* Back (upper-right) rectangle */
+    gfx_rect(bx + 2, by, bw, bh, COLOR_BLACK);
+    gfx_hline(bx + 2, by + 1, bw, COLOR_BLACK);
+    /* Front (lower-left) rectangle */
+    gfx_fill_rect(bx, by + 2, bw, bh, THEME_BUTTON_FACE);
+    gfx_rect(bx, by + 2, bw, bh, COLOR_BLACK);
+    gfx_hline(bx, by + 3, bw, COLOR_BLACK);
+}
+
 static void draw_minimize_glyph(const rect_t *btn) {
     /* Underscore bar at bottom-center of button */
     int bx = btn->x + 3;
@@ -358,7 +373,10 @@ static void draw_window_decorations(hwnd_t hwnd, window_t *win) {
     if (win->flags & WF_RESIZABLE) {
         rect_t mb = theme_max_btn_rect(&f);
         draw_button(mb.x, mb.y, mb.w, mb.h);
-        draw_maximize_glyph(&mb);
+        if (win->state == WS_MAXIMIZED)
+            draw_restore_glyph(&mb);
+        else
+            draw_maximize_glyph(&mb);
 
         rect_t nb = theme_min_btn_rect(&f);
         draw_button(nb.x, nb.y, nb.w, nb.h);
@@ -397,17 +415,13 @@ void wm_composite(void) {
         win->flags &= ~WF_DIRTY;
     }
 
-    /* Draw drag outline if a window is being dragged */
+    /* Draw drag/resize outline */
     {
-        hwnd_t dh;
-        int16_t dx, dy;
-        if (wm_get_drag_outline(&dh, &dx, &dy)) {
-            window_t *dw = wm_get_window(dh);
-            if (dw) {
-                gfx_rect(dx, dy, dw->frame.w, dw->frame.h, COLOR_BLACK);
-                gfx_rect(dx + 1, dy + 1,
-                          dw->frame.w - 2, dw->frame.h - 2, COLOR_WHITE);
-            }
+        rect_t outline;
+        if (wm_get_drag_outline(&outline)) {
+            gfx_rect(outline.x, outline.y, outline.w, outline.h, COLOR_BLACK);
+            gfx_rect(outline.x + 1, outline.y + 1,
+                      outline.w - 2, outline.h - 2, COLOR_WHITE);
         }
     }
 
