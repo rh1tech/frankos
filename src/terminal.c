@@ -8,6 +8,7 @@
 #include "FreeRTOS.h"
 #include "semphr.h"
 #include "timers.h"
+#include "task.h"
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
@@ -38,35 +39,6 @@
 #define TB_BG(attr)        ((attr) >> 4)
 
 /*==========================================================================
- * Terminal state
- *=========================================================================*/
-
-struct terminal {
-    /* Unified text-mode buffer — IS the MOS2 screen buffer */
-    uint8_t *textbuf;
-    size_t   textbuf_size;
-
-    int      cursor_col, cursor_row;
-    uint8_t  fg_color, bg_color;
-    bool     cursor_visible;
-
-    /* Keyboard input ring buffer */
-    uint8_t  input_buf[64];
-    uint8_t  in_head, in_tail;
-    SemaphoreHandle_t input_sem;
-
-    /* Window handle */
-    hwnd_t   hwnd;
-
-    /* Cursor blink timer */
-    TimerHandle_t blink_timer;
-};
-
-/* Single global terminal instance */
-static terminal_t g_terminal;
-static terminal_t *g_active_terminal = NULL;
-
-/*==========================================================================
  * Helpers
  *=========================================================================*/
 
@@ -93,12 +65,41 @@ static void terminal_input_push(terminal_t *t, uint8_t ch) {
 }
 
 /*==========================================================================
+ * Terminal ↔ Window association via user_data pointer
+ *=========================================================================*/
+
+terminal_t *terminal_from_hwnd(hwnd_t hwnd) {
+    window_t *win = wm_get_window(hwnd);
+    return win ? (terminal_t *)win->user_data : NULL;
+}
+
+hwnd_t terminal_get_hwnd(terminal_t *t) {
+    return t ? t->hwnd : HWND_NULL;
+}
+
+/*==========================================================================
+ * Per-task terminal via FreeRTOS TLS
+ *=========================================================================*/
+
+void terminal_set_task_terminal(terminal_t *t) {
+    vTaskSetThreadLocalStoragePointer(xTaskGetCurrentTaskHandle(),
+                                     TERMINAL_TLS_SLOT, t);
+}
+
+terminal_t *terminal_get_task_terminal(void) {
+    if (xTaskGetSchedulerState() != taskSCHEDULER_RUNNING)
+        return NULL;
+    return (terminal_t *)pvTaskGetThreadLocalStoragePointer(
+        xTaskGetCurrentTaskHandle(), TERMINAL_TLS_SLOT);
+}
+
+/*==========================================================================
  * Paint handler — draws the character grid using 8x16 font
  *=========================================================================*/
 
 static void terminal_paint(hwnd_t hwnd) {
-    terminal_t *t = &g_terminal;
-    if (t->hwnd != hwnd) return;
+    terminal_t *t = terminal_from_hwnd(hwnd);
+    if (!t) return;
 
     /* Compute client-area origin in screen coordinates directly,
      * bypassing wd_begin/wd_end to avoid per-pixel clipping overhead. */
@@ -168,8 +169,8 @@ static void terminal_paint(hwnd_t hwnd) {
  *=========================================================================*/
 
 static bool terminal_event(hwnd_t hwnd, const window_event_t *event) {
-    terminal_t *t = &g_terminal;
-    if (t->hwnd != hwnd) return false;
+    terminal_t *t = terminal_from_hwnd(hwnd);
+    if (!t) return false;
 
     switch (event->type) {
     case WM_CHAR:
@@ -186,6 +187,8 @@ static bool terminal_event(hwnd_t hwnd, const window_event_t *event) {
         return false;
 
     case WM_CLOSE:
+        /* Signal the shell task to exit */
+        t->closing = true;
         return true;
 
     default:
@@ -198,10 +201,23 @@ static bool terminal_event(hwnd_t hwnd, const window_event_t *event) {
  *=========================================================================*/
 
 static void blink_callback(TimerHandle_t xTimer) {
-    (void)xTimer;
-    terminal_t *t = &g_terminal;
+    terminal_t *t = (terminal_t *)pvTimerGetTimerID(xTimer);
+    if (!t) return;
     t->cursor_visible = !t->cursor_visible;
     wm_invalidate(t->hwnd);
+}
+
+/*==========================================================================
+ * Stdin waiter notification (per-terminal)
+ *=========================================================================*/
+
+void terminal_notify_stdin_ready(terminal_t *t) {
+    if (!t) return;
+    for (int i = 0; i < t->mos2_num_stdin_waiters; i++) {
+        if (t->mos2_stdin_waiters[i]) {
+            xTaskNotifyGive(t->mos2_stdin_waiters[i]);
+        }
+    }
 }
 
 /*==========================================================================
@@ -209,7 +225,8 @@ static void blink_callback(TimerHandle_t xTimer) {
  *=========================================================================*/
 
 hwnd_t terminal_create(void) {
-    terminal_t *t = &g_terminal;
+    terminal_t *t = (terminal_t *)pvPortMalloc(sizeof(terminal_t));
+    if (!t) return HWND_NULL;
     memset(t, 0, sizeof(*t));
 
     t->fg_color = COLOR_WHITE;
@@ -219,18 +236,20 @@ hwnd_t terminal_create(void) {
     /* Allocate text-mode buffer (large enough for MOS2 op_console compat) */
     t->textbuf_size = SCREEN_BUF_COMPAT_SIZE;
     t->textbuf = (uint8_t *)pvPortMalloc(t->textbuf_size);
-    if (t->textbuf) {
-        /* Fill with spaces, white-on-black */
-        uint8_t attr = TB_PACK(COLOR_WHITE, COLOR_BLACK);
-        for (int i = 0; i < TERM_COLS * TERM_ROWS; i++) {
-            t->textbuf[i * 2]     = ' ';
-            t->textbuf[i * 2 + 1] = attr;
-        }
-        /* Zero any padding beyond the text area */
-        if (t->textbuf_size > TERM_TEXTBUF_SIZE) {
-            memset(t->textbuf + TERM_TEXTBUF_SIZE, 0,
-                   t->textbuf_size - TERM_TEXTBUF_SIZE);
-        }
+    if (!t->textbuf) {
+        vPortFree(t);
+        return HWND_NULL;
+    }
+    /* Fill with spaces, white-on-black */
+    uint8_t attr = TB_PACK(COLOR_WHITE, COLOR_BLACK);
+    for (int i = 0; i < TERM_COLS * TERM_ROWS; i++) {
+        t->textbuf[i * 2]     = ' ';
+        t->textbuf[i * 2 + 1] = attr;
+    }
+    /* Zero any padding beyond the text area */
+    if (t->textbuf_size > TERM_TEXTBUF_SIZE) {
+        memset(t->textbuf + TERM_TEXTBUF_SIZE, 0,
+               t->textbuf_size - TERM_TEXTBUF_SIZE);
     }
 
     /* Create input semaphore */
@@ -252,18 +271,62 @@ hwnd_t terminal_create(void) {
         terminal_paint
     );
 
-    /* Set black background */
-    window_t *win = wm_get_window(t->hwnd);
-    if (win) win->bg_color = COLOR_BLACK;
+    if (t->hwnd == HWND_NULL) {
+        vSemaphoreDelete(t->input_sem);
+        vPortFree(t->textbuf);
+        vPortFree(t);
+        return HWND_NULL;
+    }
 
-    /* Start cursor blink timer (500ms) */
+    /* Set black background and store terminal pointer in user_data */
+    window_t *win = wm_get_window(t->hwnd);
+    if (win) {
+        win->bg_color = COLOR_BLACK;
+        win->user_data = t;
+    }
+
+    /* Start cursor blink timer (500ms) — pass terminal_t* as timer ID */
     t->blink_timer = xTimerCreate("tblink", pdMS_TO_TICKS(500),
-                                   pdTRUE, NULL, blink_callback);
+                                   pdTRUE, (void *)t, blink_callback);
     xTimerStart(t->blink_timer, 0);
 
-    g_active_terminal = t;
-
     return t->hwnd;
+}
+
+void terminal_destroy(terminal_t *t) {
+    if (!t) return;
+
+    /* Stop blink timer */
+    if (t->blink_timer) {
+        xTimerStop(t->blink_timer, portMAX_DELAY);
+        xTimerDelete(t->blink_timer, portMAX_DELAY);
+        t->blink_timer = NULL;
+    }
+
+    /* Clear user_data before destroying window */
+    window_t *win = wm_get_window(t->hwnd);
+    if (win) win->user_data = NULL;
+
+    /* Destroy the window */
+    if (t->hwnd != HWND_NULL) {
+        wm_destroy_window(t->hwnd);
+        t->hwnd = HWND_NULL;
+    }
+
+    /* Delete input semaphore */
+    if (t->input_sem) {
+        vSemaphoreDelete(t->input_sem);
+        t->input_sem = NULL;
+    }
+
+    /* Free text buffer */
+    if (t->textbuf) {
+        vPortFree(t->textbuf);
+        t->textbuf = NULL;
+    }
+
+    /* Free the terminal struct itself */
+    vPortFree(t);
 }
 
 void terminal_putc(terminal_t *t, char c) {
@@ -397,7 +460,18 @@ int terminal_getch_now(terminal_t *t) {
 }
 
 terminal_t *terminal_get_active(void) {
-    return g_active_terminal;
+    /* 1. Try TLS slot for current task */
+    terminal_t *t = terminal_get_task_terminal();
+    if (t) return t;
+
+    /* 2. Fall back to focused window's terminal */
+    hwnd_t focus = wm_get_focus();
+    if (focus != HWND_NULL) {
+        t = terminal_from_hwnd(focus);
+        if (t) return t;
+    }
+
+    return NULL;
 }
 
 uint8_t *terminal_get_textbuf(terminal_t *t) {

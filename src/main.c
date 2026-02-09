@@ -115,6 +115,21 @@ static void compositor_task(void *params) {
     }
 }
 
+/*==========================================================================
+ * Spawn a new terminal window with its own shell task
+ *=========================================================================*/
+static void spawn_terminal_window(void) {
+    hwnd_t hwnd = terminal_create();
+    if (hwnd == HWND_NULL) {
+        printf("spawn_terminal_window: out of memory\n");
+        return;
+    }
+    terminal_t *t = terminal_from_hwnd(hwnd);
+    if (!t) return;
+    shell_start(t);
+    wm_set_focus(hwnd);
+}
+
 static void input_task(void *params) {
     (void)params;
 
@@ -129,6 +144,23 @@ static void input_task(void *params) {
 
         key_event_t kev;
         while (keyboard_get_event(&kev)) {
+            /* Intercept Ctrl+T: spawn a new terminal window
+             * hid_code uses HID usage codes, not PS/2 scancodes */
+            if (kev.pressed && (kev.modifiers & KBD_MOD_CTRL) &&
+                kev.hid_code == 0x17 /* HID_KEY_T */) {
+                spawn_terminal_window();
+                g_video_dirty = true;
+                continue;
+            }
+
+            /* Intercept Alt+Tab: cycle focus between windows */
+            if (kev.pressed && (kev.modifiers & KBD_MOD_ALT) &&
+                kev.hid_code == 0x2B /* HID_KEY_TAB */) {
+                wm_cycle_focus();
+                g_video_dirty = true;
+                continue;
+            }
+
             window_event_t we = {0};
             if (kev.pressed) {
                 /* Send WM_KEYDOWN for all key presses */
@@ -275,7 +307,7 @@ int main(void) {
     printf("Terminal created (hwnd=%d)\n", term_win); stdio_flush();
 
     /* Start shell on the terminal (runs as a FreeRTOS task) */
-    terminal_t *term = terminal_get_active();
+    terminal_t *term = terminal_from_hwnd(term_win);
     shell_start(term);
 
     /* One-shot composite so the first frame is visible */

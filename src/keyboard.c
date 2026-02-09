@@ -8,6 +8,7 @@
  */
 
 #include "keyboard.h"
+#include "terminal.h"
 #include "ps2.h"
 #include "FreeRTOS.h"
 #include "task.h"
@@ -454,44 +455,51 @@ bool keyboard_get_event(key_event_t *ev) {
  * and we notify all waiting tasks via xTaskNotifyGive().
  *=========================================================================*/
 
-static scancode_handler_t g_scancode_handler = NULL;
-static cp866_handler_t g_cp866_handler = NULL;
+/* Per-terminal MOS2 handler/waiter operations.
+ * All state is stored in the calling task's terminal_t (via TLS). */
 
-void set_scancode_handler(scancode_handler_t h) { printf("[set_scancode_handler] %p\n", h); g_scancode_handler = h; }
-void set_cp866_handler(cp866_handler_t h) { g_cp866_handler = h; }
-scancode_handler_t get_scancode_handler(void) { printf("[get_scancode_handler] -> %p\n", g_scancode_handler); return g_scancode_handler; }
-cp866_handler_t get_cp866_handler(void) { return g_cp866_handler; }
+void set_scancode_handler(scancode_handler_t h) {
+    terminal_t *t = terminal_get_active();
+    if (t) t->mos2_scancode_handler = h;
+    printf("[set_scancode_handler] %p -> term %p\n", h, t);
+}
+void set_cp866_handler(cp866_handler_t h) {
+    terminal_t *t = terminal_get_active();
+    if (t) t->mos2_cp866_handler = h;
+}
+scancode_handler_t get_scancode_handler(void) {
+    terminal_t *t = terminal_get_active();
+    scancode_handler_t h = t ? t->mos2_scancode_handler : NULL;
+    printf("[get_scancode_handler] -> %p (term %p)\n", h, t);
+    return h;
+}
+cp866_handler_t get_cp866_handler(void) {
+    terminal_t *t = terminal_get_active();
+    return t ? t->mos2_cp866_handler : NULL;
+}
 void kbd_set_stdin_owner(long pid) { (void)pid; }
 
-/* Stdin waiters — tasks blocked on ulTaskNotifyTake waiting for keyboard */
-#define MAX_STDIN_WAITERS 4
-static TaskHandle_t stdin_waiters[MAX_STDIN_WAITERS];
-static int num_stdin_waiters = 0;
-
+/* Stdin waiters — per-terminal, stored in terminal_t */
 void kbd_add_stdin_waiter(void *th) {
+    terminal_t *t = terminal_get_active();
+    if (!t) return;
     TaskHandle_t h = (TaskHandle_t)th;
-    for (int i = 0; i < num_stdin_waiters; i++) {
-        if (stdin_waiters[i] == h) return; /* already registered */
+    for (int i = 0; i < t->mos2_num_stdin_waiters; i++) {
+        if (t->mos2_stdin_waiters[i] == h) return; /* already registered */
     }
-    if (num_stdin_waiters < MAX_STDIN_WAITERS) {
-        stdin_waiters[num_stdin_waiters++] = h;
+    if (t->mos2_num_stdin_waiters < MAX_STDIN_WAITERS) {
+        t->mos2_stdin_waiters[t->mos2_num_stdin_waiters++] = h;
     }
 }
 
 void kbd_remove_stdin_waiter(void *th) {
+    terminal_t *t = terminal_get_active();
+    if (!t) return;
     TaskHandle_t h = (TaskHandle_t)th;
-    for (int i = 0; i < num_stdin_waiters; i++) {
-        if (stdin_waiters[i] == h) {
-            stdin_waiters[i] = stdin_waiters[--num_stdin_waiters];
+    for (int i = 0; i < t->mos2_num_stdin_waiters; i++) {
+        if (t->mos2_stdin_waiters[i] == h) {
+            t->mos2_stdin_waiters[i] = t->mos2_stdin_waiters[--t->mos2_num_stdin_waiters];
             return;
-        }
-    }
-}
-
-static void kbd_notify_stdin_ready(void) {
-    for (int i = 0; i < num_stdin_waiters; i++) {
-        if (stdin_waiters[i]) {
-            xTaskNotifyGive(stdin_waiters[i]);
         }
     }
 }
@@ -505,7 +513,9 @@ static void kbd_notify_stdin_ready(void) {
  * default processing — matching MOS2's architecture.
  *=========================================================================*/
 
-/* __c is the MOS2 global "last character typed" — defined in mos2_stubs.c */
+/* __c is now per-terminal (terminal_t.mos2_c), but we keep this extern
+ * for backward compatibility — it aliases the focused terminal's mos2_c.
+ * Defined in mos2_stubs.c. */
 extern volatile int __c;
 
 /* MOS2 character codes used by apps (mc checks for these) */
@@ -613,39 +623,43 @@ static void default_mos2_handler(uint32_t ps2scancode) {
     size_t s;
     char c = 0;
 
+    /* Find the focused terminal to route MOS2 input to */
+    hwnd_t focus = wm_get_focus();
+    terminal_t *ft = (focus != HWND_NULL) ? terminal_from_hwnd(focus) : NULL;
+
     ks.input = ps2scancode;
 
     /* Arrow keys (when NumLock is off) → character codes */
     if ((ps2scancode == 0xE048 || ps2scancode == 0x48) &&
         !(get_leds_stat() & PS2_LED_NUM_LOCK)) {
         ks.input = 0;
-        if (g_cp866_handler) g_cp866_handler(CHAR_CODE_UP, ps2scancode);
+        if (ft && ft->mos2_cp866_handler) ft->mos2_cp866_handler(CHAR_CODE_UP, ps2scancode);
+        if (ft) { ft->mos2_c = CHAR_CODE_UP; terminal_notify_stdin_ready(ft); }
         __c = CHAR_CODE_UP;
-        kbd_notify_stdin_ready();
         goto ex;
     }
     if ((ps2scancode == 0xE050 || ps2scancode == 0x50) &&
         !(get_leds_stat() & PS2_LED_NUM_LOCK)) {
         ks.input = 0;
-        if (g_cp866_handler) g_cp866_handler(CHAR_CODE_DOWN, ps2scancode);
+        if (ft && ft->mos2_cp866_handler) ft->mos2_cp866_handler(CHAR_CODE_DOWN, ps2scancode);
+        if (ft) { ft->mos2_c = CHAR_CODE_DOWN; terminal_notify_stdin_ready(ft); }
         __c = CHAR_CODE_DOWN;
-        kbd_notify_stdin_ready();
         goto ex;
     }
 
     /* Numpad Enter */
     if (ps2scancode == 0xE09C) {
-        if (g_cp866_handler) g_cp866_handler(CHAR_CODE_ENTER, ps2scancode);
+        if (ft && ft->mos2_cp866_handler) ft->mos2_cp866_handler(CHAR_CODE_ENTER, ps2scancode);
+        if (ft) { ft->mos2_c = CHAR_CODE_ENTER; terminal_notify_stdin_ready(ft); }
         __c = CHAR_CODE_ENTER;
-        kbd_notify_stdin_ready();
         goto ex;
     }
 
     switch ((uint8_t)(ks.input & 0xFF)) {
     case 0x81: /* ESC release */
-        if (g_cp866_handler) g_cp866_handler(CHAR_CODE_ESC, ps2scancode);
+        if (ft && ft->mos2_cp866_handler) ft->mos2_cp866_handler(CHAR_CODE_ESC, ps2scancode);
+        if (ft) { ft->mos2_c = CHAR_CODE_ESC; terminal_notify_stdin_ready(ft); }
         __c = CHAR_CODE_ESC;
-        kbd_notify_stdin_ready();
         goto ex;
     case 0x1D: /* Ctrl press */
         ks.bCtrlPressed = true;
@@ -662,8 +676,8 @@ static void default_mos2_handler(uint32_t ps2scancode) {
         s = strlen(tricode);
         if (s) {
             c = tricode2c(tricode, s);
+            if (ft) { ft->mos2_c = c; terminal_notify_stdin_ready(ft); }
             __c = c;
-            kbd_notify_stdin_ready();
             goto ex;
         }
         break;
@@ -691,9 +705,9 @@ static void default_mos2_handler(uint32_t ps2scancode) {
         ks.bCapsLock = !ks.bCapsLock;
         break;
     case 0x0E: /* Backspace */
-        if (g_cp866_handler) g_cp866_handler(CHAR_CODE_BS, ps2scancode);
+        if (ft && ft->mos2_cp866_handler) ft->mos2_cp866_handler(CHAR_CODE_BS, ps2scancode);
+        if (ft) { ft->mos2_c = CHAR_CODE_BS; terminal_notify_stdin_ready(ft); }
         __c = CHAR_CODE_BS;
-        kbd_notify_stdin_ready();
         goto ex;
     case 0x0F: /* Tab press */
         ks.bTabPressed = true;
@@ -751,19 +765,21 @@ static void default_mos2_handler(uint32_t ps2scancode) {
                 }
             }
         }
-        if (g_cp866_handler) g_cp866_handler(c, ps2scancode);
+        if (ft && ft->mos2_cp866_handler) ft->mos2_cp866_handler(c, ps2scancode);
         if (ks.bCtrlPressed && ps2scancode == 0x2E) {
             /* Ctrl+C → EOF */
+            if (ft) ft->mos2_c = -1;
             __c = -1;
         } else {
+            if (ft) ft->mos2_c = c;
             __c = c;
         }
-        kbd_notify_stdin_ready();
+        if (ft) terminal_notify_stdin_ready(ft);
     }
 
 ex:
-    if (g_scancode_handler) {
-        g_scancode_handler(ps2scancode);
+    if (ft && ft->mos2_scancode_handler) {
+        ft->mos2_scancode_handler(ps2scancode);
     }
 }
 
