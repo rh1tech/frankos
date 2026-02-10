@@ -18,7 +18,7 @@
 
 extern const char TEMP[];
 const char _flash_me[] = ".flash_me";
-extern uint32_t butter_psram_size;
+extern uint32_t butter_psram_size_var;
 
 #define M_OS_APP_TABLE_BASE ((size_t)(XIP_BASE + (FIRMWARE_OFFSET << 10)))
 typedef int (*boota_ptr_t)( void *argv );
@@ -1258,7 +1258,7 @@ void __in_hfa() exec(cmd_ctx_t* ctx) { // like init proc flow
             #if DEBUG_APP_LOAD
             goutf("Clone ctx [%p]->[%p]\n", ctx, ctxi);
             #endif
-            xTaskCreate(vAppDetachedTask, ctxi->argv[0], 1024/*x 4 = 4096*/, ctxi, configMAX_PRIORITIES - 1, NULL);
+            xTaskCreate(vAppDetachedTask, ctxi->argv[0], 2048/*x 4 = 8192*/, ctxi, configMAX_PRIORITIES - 1, NULL);
             cleanup_ctx(ctx);
         } else {
             #if DEBUG_APP_LOAD
@@ -1266,7 +1266,7 @@ void __in_hfa() exec(cmd_ctx_t* ctx) { // like init proc flow
             #endif
             ctx->parent_task = xTaskGetCurrentTaskHandle();
             kbd_set_stdin_owner(ctx->pid);
-            xTaskCreate(vAppAttachedTask, ctx->argv[0], 1024/*x 4 = 4096*/, ctx, configMAX_PRIORITIES - 1, NULL);
+            xTaskCreate(vAppAttachedTask, ctx->argv[0], 2048/*x 4 = 8192*/, ctx, configMAX_PRIORITIES - 1, NULL);
             #if DEBUG_APP_LOAD
             goutf("ctx [%p], ulTaskNotifyTake[%p]\n", ctx, ctx->parent_task);
             #endif
@@ -1317,7 +1317,7 @@ void __in_hfa() mallocFailedHandler(size_t sz) {
             " available bytes total: %d (%dK)\n"
             "         largets block: %d (%dK)\n",
             sz, sz >> 10,
-            configTOTAL_HEAP_SIZE + butter_psram_size, (configTOTAL_HEAP_SIZE + butter_psram_size) >> 10,
+            configTOTAL_HEAP_SIZE + butter_psram_size_var, (configTOTAL_HEAP_SIZE + butter_psram_size_var) >> 10,
             stat.xAvailableHeapSpaceInBytes, stat.xAvailableHeapSpaceInBytes >> 10,
             stat.xSizeOfLargestFreeBlockInBytes, stat.xSizeOfLargestFreeBlockInBytes >> 10
         );

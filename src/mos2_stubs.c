@@ -21,6 +21,7 @@
 #include "terminal.h"
 #include "keyboard.h"
 #include "font.h"
+#include "psram.h"
 
 /*==========================================================================
  * Global variable: keyboard character (MOS2 keyboard.c uses this)
@@ -31,8 +32,9 @@ volatile int __c = 0;
 
 /*==========================================================================
  * Global variable: PSRAM buffer size (referenced by cmd.c and app.c)
+ * Named _var to avoid clash with the butter_psram_size() function in psram.h.
  *=========================================================================*/
-uint32_t butter_psram_size = 0;
+uint32_t butter_psram_size_var = 0;
 
 /*==========================================================================
  * Console I/O — route to active terminal
@@ -138,15 +140,14 @@ char getch_now(void) {
  * Console info
  *=========================================================================*/
 
-uint32_t get_console_width(void) { printf("[get_console_width] -> %d\n", TERM_COLS); return TERM_COLS; }
-uint32_t get_console_height(void) { printf("[get_console_height] -> %d\n", TERM_ROWS); return TERM_ROWS; }
+uint32_t get_console_width(void) { return TERM_COLS; }
+uint32_t get_console_height(void) { return TERM_ROWS; }
 uint32_t get_screen_width(void) { return 320; }
 uint32_t get_screen_height(void) { return 240; }
 uint8_t get_console_bitness(void) { return 4; }
 uint8_t get_screen_bitness(void) { return 4; }
 
 void graphics_set_con_pos(int x, int y) {
-    printf("[set_con_pos] x=%d y=%d\n", x, y);
     terminal_t *t = terminal_get_active();
     if (t) terminal_set_cursor(t, x, y);
 }
@@ -203,7 +204,6 @@ void draw_text(const char *s, int x, int y, uint8_t color, uint8_t bgcolor) {
 
 void draw_panel(color_schema_t *pcs, int left, int top, int width, int height,
                 char *title, char *bottom) {
-    printf("[draw_panel] l=%d t=%d w=%d h=%d title='%s'\n", left, top, width, height, title ? title : "(null)");
     char line[82]; /* max TERM_COLS + 2 */
     if (width > 80) width = 80;
     if (width < 2) return;
@@ -430,21 +430,36 @@ void set_vga_clkdiv(uint32_t pixel_clock, uint32_t line_size) { (void)pixel_cloc
 void vga_dma_channel_set_read_addr(const volatile void *addr) { (void)addr; }
 
 /*==========================================================================
- * PSRAM — stubs (Rhea has no PSRAM)
+ * PSRAM — memory-mapped access via QSPI CS1 (uncached window 0x15000000)
+ *
+ * When PSRAM hardware is present and initialized, these provide direct
+ * memory-mapped read/write.  When absent, butter_psram_size() returns 0
+ * and the stubs return zeros / no-op (same as before).
  *=========================================================================*/
 
-uint32_t init_psram(void) { return 0; }
-uint32_t psram_size(void) { return 0; }
+uint32_t init_psram(void) {
+    uint32_t sz = butter_psram_size();
+    butter_psram_size_var = sz;
+    return sz;
+}
+uint32_t psram_size(void) { return butter_psram_size(); }
 void psram_cleanup(void) {}
-void write8psram(uint32_t a, uint8_t v) { (void)a; (void)v; }
-void write16psram(uint32_t a, uint16_t v) { (void)a; (void)v; }
-void write32psram(uint32_t a, uint32_t v) { (void)a; (void)v; }
-uint8_t read8psram(uint32_t a) { (void)a; return 0; }
-uint16_t read16psram(uint32_t a) { (void)a; return 0; }
-uint32_t read32psram(uint32_t a) { (void)a; return 0; }
+
+void write8psram(uint32_t a, uint8_t v)   { *(volatile uint8_t  *)(PSRAM_BASE + a) = v; }
+void write16psram(uint32_t a, uint16_t v) { *(volatile uint16_t *)(PSRAM_BASE + a) = v; }
+void write32psram(uint32_t a, uint32_t v) { *(volatile uint32_t *)(PSRAM_BASE + a) = v; }
+uint8_t  read8psram(uint32_t a)  { return *(volatile uint8_t  *)(PSRAM_BASE + a); }
+uint16_t read16psram(uint32_t a) { return *(volatile uint16_t *)(PSRAM_BASE + a); }
+uint32_t read32psram(uint32_t a) { return *(volatile uint32_t *)(PSRAM_BASE + a); }
+
 void psram_id(uint8_t rx[8]) { memset(rx, 0, 8); }
-void writepsram(uint32_t a, uint8_t *b, size_t sz) { (void)a; (void)b; (void)sz; }
-void readpsram(uint8_t *b, uint32_t a, size_t sz) { (void)b; (void)a; (void)sz; memset(b, 0, sz); }
+
+void writepsram(uint32_t a, uint8_t *b, size_t sz) {
+    memcpy((void *)(PSRAM_BASE + a), b, sz);
+}
+void readpsram(uint8_t *b, uint32_t a, size_t sz) {
+    memcpy(b, (const void *)(PSRAM_BASE + a), sz);
+}
 
 /*==========================================================================
  * USB mass storage — stubs
@@ -491,5 +506,5 @@ FATFS *get_mount_fs(void) { return &fatfs; }
 
 void show_logo(bool with_top) {
     (void)with_top;
-    goutf("Rhea OS\n");
+    goutf("MOS\n");
 }

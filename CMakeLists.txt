@@ -1,6 +1,7 @@
 cmake_minimum_required(VERSION 3.13)
 
-set(PICO_BOARD pico2)
+set(PICO_BOARD rhea_m2)
+set(PICO_BOARD_HEADER_DIRS ${CMAKE_CURRENT_LIST_DIR}/boards)
 set(PICO_PLATFORM rp2350-arm-s)
 
 set(FREERTOS_KERNEL_PATH ${CMAKE_CURRENT_LIST_DIR}/lib/FreeRTOS-Kernel)
@@ -29,6 +30,9 @@ add_subdirectory(drivers/fatfs)
 
 # SD card SPI driver
 include(drivers/sdcard/sdcard.cmake)
+
+# PSRAM speed option (set to "" to disable PSRAM HW init; detection still runs)
+set(PSRAM_SPEED "84" CACHE STRING "PSRAM max frequency in MHz (empty to disable HW init)")
 
 # Collect MOS2 musl source files
 file(GLOB MUSL_SRC "src/musl/*.c")
@@ -69,16 +73,26 @@ add_executable(rhea
     ${MUSL_SRC}
     ${POSIX_SRC}
     src/obsd/fts.c
+
+    # PSRAM allocator (always compiled — returns NULL when no HW present)
+    drivers/psram/psram.c
 )
 target_include_directories(rhea PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}/src
     ${CMAKE_CURRENT_LIST_DIR}/drivers/ps2
     ${CMAKE_CURRENT_LIST_DIR}/drivers/fatfs
+    ${CMAKE_CURRENT_LIST_DIR}/drivers/psram
     ${CMAKE_CURRENT_LIST_DIR}/src/posix.1/include
     ${CMAKE_CURRENT_LIST_DIR}/src/musl/include
     ${CMAKE_CURRENT_LIST_DIR}/src/musl/internal
     ${CMAKE_CURRENT_LIST_DIR}/src/obsd/include
 )
+
+# PSRAM HW init (only when PSRAM_SPEED is set)
+if(PSRAM_SPEED)
+    target_sources(rhea PRIVATE drivers/psram/psram_init.c)
+    target_compile_definitions(rhea PRIVATE PSRAM_MAX_FREQ_MHZ=${PSRAM_SPEED})
+endif()
 
 # Force-include our DispHSTX config so the library sees it before its own _config.h
 target_compile_options(rhea PRIVATE -include ${CMAKE_CURRENT_LIST_DIR}/src/config.h)

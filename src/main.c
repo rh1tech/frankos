@@ -5,6 +5,7 @@
 #include "hardware/clocks.h"
 #include "hardware/gpio.h"
 #include "hardware/structs/qmi.h"
+#include "hardware/watchdog.h"
 #include "tusb.h"
 #include "FreeRTOS.h"
 #include "task.h"
@@ -18,6 +19,10 @@
 #include "terminal.h"
 #include "shell.h"
 #include "disphstx.h"
+#include "psram.h"
+#ifdef PSRAM_MAX_FREQ_MHZ
+#include "psram_init.h"
+#endif
 
 #define LED_PIN PICO_DEFAULT_LED_PIN
 
@@ -29,7 +34,26 @@ static inline void led_init(void) {
     gpio_set_dir(LED_PIN, GPIO_OUT);
 }
 
-// Hard fault handler — prints fault info to USB serial, then blinks LED.
+/*==========================================================================
+ * Crash dump — stored in .uninitialized_data so it survives warm resets
+ * (watchdog, soft reset) but is random on power-on.
+ *=========================================================================*/
+typedef struct {
+    uint32_t magic;     /* 0xDEAD0001 if valid */
+    uint32_t pc;
+    uint32_t lr;
+    uint32_t exc_lr;
+    uint32_t sp;
+    uint32_t cfsr;
+    uint32_t hfsr;
+    uint32_t bfar;      /* Bus Fault Address Register */
+    uint32_t r0, r1, r2, r3, r12;  /* stacked regs */
+} crash_dump_t;
+
+static crash_dump_t __attribute__((section(".uninitialized_data")))
+    g_crash_dump;
+
+// Hard fault handler — saves crash info to SRAM, reboots via watchdog.
 // Named isr_hardfault to override the weak symbol in Pico SDK's vector table.
 void __attribute__((used, naked)) isr_hardfault(void) {
     __asm volatile(
@@ -43,32 +67,30 @@ void __attribute__((used, naked)) isr_hardfault(void) {
 }
 
 void __attribute__((used)) hardfault_c_handler(uint32_t *stack, uint32_t lr_val) {
-    uint32_t pc  = stack[6];
-    uint32_t lr  = stack[5];
-    // Write fault info to watchdog scratch registers (survive reset)
-    volatile uint32_t *SCRATCH = (volatile uint32_t *)0x40058000;
-    // watchdog_hw->scratch[0..7] at offsets 0x0C..0x28
-    // Use direct register addresses for scratch[0..5]
-    SCRATCH[3] = 0xDEAD0001;  // scratch[0] = magic
-    SCRATCH[4] = pc;           // scratch[1] = faulting PC
-    SCRATCH[5] = lr;           // scratch[2] = LR
-    SCRATCH[6] = lr_val;       // scratch[3] = EXC_LR
-    SCRATCH[7] = (uint32_t)stack; // scratch[4] = SP
-    // Fault status registers
-    volatile uint32_t *CFSR  = (volatile uint32_t *)0xE000ED28;
-    volatile uint32_t *HFSR  = (volatile uint32_t *)0xE000ED2C;
-    SCRATCH[8] = *CFSR;       // scratch[5] = CFSR
-    SCRATCH[9] = *HFSR;       // scratch[6] = HFSR
-    // Blink LED as visual indicator
+    g_crash_dump.magic  = 0xDEAD0001;
+    g_crash_dump.pc     = stack[6];
+    g_crash_dump.lr     = stack[5];
+    g_crash_dump.exc_lr = lr_val;
+    g_crash_dump.sp     = (uint32_t)stack;
+    g_crash_dump.cfsr   = *(volatile uint32_t *)0xE000ED28;
+    g_crash_dump.hfsr   = *(volatile uint32_t *)0xE000ED2C;
+    g_crash_dump.bfar   = *(volatile uint32_t *)0xE000ED38;
+    g_crash_dump.r0     = stack[0];
+    g_crash_dump.r1     = stack[1];
+    g_crash_dump.r2     = stack[2];
+    g_crash_dump.r3     = stack[3];
+    g_crash_dump.r12    = stack[4];
+    __asm volatile ("dsb 0xF" ::: "memory");
+    // Reboot via watchdog in ~2 seconds.  SDK function handles RP2350's
+    // separate TICKS peripheral for the watchdog tick source.
+    watchdog_enable(2000, false);
+    // Blink LED until watchdog fires
     *(volatile unsigned int *)0xd0000038 = (1u << 25);
     for (;;) {
-        for (int b = 0; b < 2; b++) {
-            *(volatile unsigned int *)0xd0000018 = (1u << 25);
-            for (volatile int i = 0; i < 10000000; i++);
-            *(volatile unsigned int *)0xd0000020 = (1u << 25);
-            for (volatile int i = 0; i < 10000000; i++);
-        }
-        for (volatile int i = 0; i < 60000000; i++);
+        *(volatile unsigned int *)0xd0000018 = (1u << 25);
+        for (volatile int i = 0; i < 3000000; i++);
+        *(volatile unsigned int *)0xd0000020 = (1u << 25);
+        for (volatile int i = 0; i < 3000000; i++);
     }
 }
 
@@ -144,9 +166,10 @@ static void input_task(void *params) {
 
         key_event_t kev;
         while (keyboard_get_event(&kev)) {
-            /* Intercept Ctrl+T: spawn a new terminal window
+            /* Intercept Win+T: spawn a new terminal window
              * hid_code uses HID usage codes, not PS/2 scancodes */
-            if (kev.pressed && (kev.modifiers & KBD_MOD_CTRL) &&
+            if (kev.pressed &&
+                (kev.modifiers & (KBD_MOD_LGUI | KBD_MOD_RGUI)) &&
                 kev.hid_code == 0x17 /* HID_KEY_T */) {
                 spawn_terminal_window();
                 g_video_dirty = true;
@@ -247,17 +270,18 @@ int main(void) {
     led_init();
 
     // Check for saved HardFault info from previous crash
-    {
-        volatile uint32_t *S = (volatile uint32_t *)0x40058000;
-        if (S[3] == 0xDEAD0001) {
-            printf("\n!!! PREVIOUS HARDFAULT !!!\n");
-            printf("PC  = %08lX\n", S[4]);
-            printf("LR  = %08lX\n", S[5]);
-            printf("EXC_LR = %08lX  SP = %08lX\n", S[6], S[7]);
-            printf("CFSR = %08lX  HFSR = %08lX\n", S[8], S[9]);
-            stdio_flush();
-            S[3] = 0;  // clear magic so we don't print again
-        }
+    if (g_crash_dump.magic == 0xDEAD0001) {
+        printf("\n!!! PREVIOUS HARDFAULT !!!\n");
+        printf("PC  = %08lX\n", g_crash_dump.pc);
+        printf("LR  = %08lX\n", g_crash_dump.lr);
+        printf("EXC_LR = %08lX  SP = %08lX\n", g_crash_dump.exc_lr, g_crash_dump.sp);
+        printf("CFSR = %08lX  HFSR = %08lX\n", g_crash_dump.cfsr, g_crash_dump.hfsr);
+        printf("BFAR = %08lX\n", g_crash_dump.bfar);
+        printf("R0=%08lX R1=%08lX R2=%08lX R3=%08lX R12=%08lX\n",
+               g_crash_dump.r0, g_crash_dump.r1, g_crash_dump.r2,
+               g_crash_dump.r3, g_crash_dump.r12);
+        stdio_flush();
+        g_crash_dump.magic = 0;
     }
 
     printf("\n== Rhea OS ==\n");
@@ -269,6 +293,16 @@ int main(void) {
     printf("Initializing display...\n"); stdio_flush();
     display_init();
     printf("Display initialized\n"); stdio_flush();
+
+    /* Initialize PSRAM (if HW init is compiled in) and probe size */
+#ifdef PSRAM_MAX_FREQ_MHZ
+    uint psram_pin = get_psram_pin();
+    printf("PSRAM: init on CS pin %u\n", psram_pin); stdio_flush();
+    psram_init(psram_pin);
+#endif
+    psram_heap_init();
+    printf("PSRAM: %u KB\n", psram_detected_bytes() / 1024);
+    stdio_flush();
 
     printf("Initializing PS/2 (unified driver)...\n"); stdio_flush();
     if (ps2_init(pio0, PS2_PIN_CLK, PS2_MOUSE_CLK)) {

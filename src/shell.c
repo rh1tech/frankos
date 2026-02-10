@@ -14,6 +14,25 @@
 #define SHELL_MAX_LINE  256
 #define SHELL_MAX_ARGS  16
 
+static int next_shell_id = 0;
+
+/* Recursively remove a directory and all its contents (FatFS) */
+static void rm_rf(const char *path) {
+    DIR dir;
+    FILINFO fno;
+    if (f_opendir(&dir, path) != FR_OK) return;
+    char child[64];
+    while (f_readdir(&dir, &fno) == FR_OK && fno.fname[0]) {
+        snprintf(child, sizeof(child), "%s/%s", path, fno.fname);
+        if (fno.fattrib & AM_DIR)
+            rm_rf(child);
+        else
+            f_unlink(child);
+    }
+    f_closedir(&dir);
+    f_unlink(path);
+}
+
 /* Helper: get this shell's terminal via TLS */
 static inline terminal_t *my_term(void) {
     return terminal_get_active();
@@ -308,7 +327,7 @@ static void shell_run_elf(terminal_t *t, int argc, char **argv) {
         printf("[shell] chain ended, re-running '%s'\n", saved_cmd);
 
         /* Repair context after cleanup_ctx zeroed pids and pallocs */
-        pids->p[1] = ctx;
+        pids->p[ctx->pid] = ctx;
         vTaskSetThreadLocalStoragePointer(xTaskGetCurrentTaskHandle(), 0, ctx);
 
         /* Re-prepare context with original command */
@@ -352,33 +371,40 @@ static void shell_task(void *pv) {
     /* Store terminal in this task's TLS so terminal_get_active() finds it */
     terminal_set_task_terminal(t);
 
-    /* Set up this task's cmd_ctx */
+    /* Allocate a per-shell cmd_ctx (each terminal needs its own) */
     const TaskHandle_t th = xTaskGetCurrentTaskHandle();
-    cmd_ctx_t *ctx = get_cmd_startup_ctx();
+    extern array_t *pids;
+    cmd_ctx_t *ctx = (cmd_ctx_t *)pvPortCalloc(1, sizeof(cmd_ctx_t));
     ctx->task = th;
-    ctx->pid = 1;
     ctx->ppid = 0;
-    ctx->pgid = 1;
-    ctx->sid = 1;
     ctx->term = t;
     vTaskSetThreadLocalStoragePointer(th, 0, ctx);
 
-    /* Initialize pids array */
-    extern array_t *pids;
+    /* Initialize pids array on first shell; assign unique pid for each */
     if (!pids) {
         pids = new_array_v(0, 0, 0);
         array_push_back(pids, 0);     /* index 0 unused */
-        array_push_back(pids, ctx);   /* index 1 = shell */
     }
+    int pid = (int)pids->size;
+    array_push_back(pids, ctx);
+    ctx->pid = pid;
+    ctx->pgid = pid;
+    ctx->sid = pid;
+
+    /* Create per-shell temp directory */
+    int shell_id = next_shell_id++;
+    char tmpdir[24];
+    snprintf(tmpdir, sizeof(tmpdir), "/tmp/%d", shell_id);
+    f_mkdir(tmpdir);
 
     /* Set default env vars */
     set_ctx_var(ctx, "CD", "/");
     set_ctx_var(ctx, "BASE", "/");
     set_ctx_var(ctx, "PATH", "/mos2");
-    set_ctx_var(ctx, "TEMP", "/tmp");
+    set_ctx_var(ctx, "TEMP", tmpdir);
 
     /* Show welcome */
-    terminal_puts(t, "RHEA OS\n");
+    terminal_puts(t, "MOS\n");
     if (sdcard_is_mounted()) {
         terminal_puts(t, "SD card: mounted\n");
     } else {
@@ -431,8 +457,9 @@ static void shell_task(void *pv) {
         }
     }
 
-    /* Shell exiting — destroy terminal */
-    printf("[shell] shell task exiting, destroying terminal\n");
+    /* Shell exiting — clean up per-shell temp directory and destroy terminal */
+    printf("[shell] shell task exiting, cleaning up %s\n", tmpdir);
+    rm_rf(tmpdir);
     terminal_destroy(t);
     vTaskDelete(NULL);
 }

@@ -623,6 +623,12 @@ static void default_mos2_handler(uint32_t ps2scancode) {
     size_t s;
     char c = 0;
 
+    /* Suppress MOS2 character output when Win (GUI) key is held.
+     * Win+key combos are handled by input_task and should not leak
+     * characters into MOS2 apps. */
+    if (modifiers & (KBD_MOD_LGUI | KBD_MOD_RGUI))
+        return;
+
     /* Find the focused terminal to route MOS2 input to */
     hwnd_t focus = wm_get_focus();
     terminal_t *ft = (focus != HWND_NULL) ? terminal_from_hwnd(focus) : NULL;

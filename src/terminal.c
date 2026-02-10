@@ -12,6 +12,8 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
+#include "psram.h"
+#include "pico/platform.h"
 
 /*==========================================================================
  * Text-mode buffer layout (MOS2-compatible)
@@ -24,11 +26,8 @@
  * directly to the buffer, changes are reflected in the terminal.
  *=========================================================================*/
 
-/* op_console computes buffer size as (screen_w * screen_h * bitness) >> 3.
- * With our values (320*240*4)/8 = 38400.  Allocate at least that much so
- * save/restore_console don't overflow, even though only 2800 bytes are
- * the actual text content (70*20*2). */
-#define SCREEN_BUF_COMPAT_SIZE  ((320 * 240 * 4) >> 3)  /* 38400 */
+/* Only allocate the actual text content (70*20*2 = 2800 bytes).
+ * op_console is clamped to get_buffer_size() so no overrun occurs. */
 
 /* Buffer access macros */
 #define TB_OFF(row, col)   ((row) * TERM_COLS * 2 + (col) * 2)
@@ -42,11 +41,15 @@
  * Helpers
  *=========================================================================*/
 
-static void terminal_scroll_up(terminal_t *t) {
-    /* Move rows 1..TERM_ROWS-1 up to rows 0..TERM_ROWS-2 */
-    memmove(t->textbuf,
-            t->textbuf + TERM_COLS * 2,
-            TERM_COLS * 2 * (TERM_ROWS - 1));
+static void __not_in_flash_func(terminal_scroll_up)(terminal_t *t) {
+    /* Move rows 1..TERM_ROWS-1 up to rows 0..TERM_ROWS-2.
+     * Manual loop instead of memmove() because memmove is in flash and
+     * calling it on a PSRAM buffer causes CS0 (flash instruction fetch) +
+     * CS1 (PSRAM data) QMI bus contention that hangs the system. */
+    volatile uint8_t *dst = t->textbuf;
+    volatile uint8_t *src = t->textbuf + TERM_COLS * 2;
+    int n = TERM_COLS * 2 * (TERM_ROWS - 1);
+    for (int i = 0; i < n; i++) dst[i] = src[i];
     /* Clear last row */
     uint8_t attr = TB_PACK(t->fg_color, t->bg_color);
     uint8_t *last = t->textbuf + TERM_COLS * 2 * (TERM_ROWS - 1);
@@ -95,11 +98,32 @@ terminal_t *terminal_get_task_terminal(void) {
 
 /*==========================================================================
  * Paint handler — draws the character grid using 8x16 font
+ *
+ * When the textbuf lives in PSRAM, thousands of individual byte reads
+ * from the uncached XIP window (0x15000000) interleave with flash
+ * instruction fetches through the shared QMI bus, which can cause
+ * bus hangs.  We snapshot the textbuf into a SRAM shadow buffer once
+ * via memcpy, then render entirely from SRAM.
  *=========================================================================*/
 
-static void terminal_paint(hwnd_t hwnd) {
+static uint8_t paint_shadow[TERM_TEXTBUF_SIZE];
+
+static void __not_in_flash_func(terminal_paint)(hwnd_t hwnd) {
     terminal_t *t = terminal_from_hwnd(hwnd);
-    if (!t) return;
+    if (!t || !t->textbuf) return;
+
+    /* Snapshot textbuf into SRAM — one bulk copy instead of thousands
+     * of individual PSRAM reads during the rendering loop.
+     * Manual loop instead of memcpy() because memcpy is in flash and
+     * calling it on a PSRAM source causes QMI bus contention (CS0
+     * instruction fetch + CS1 data read simultaneously → bus hang).
+     * volatile source prevents the compiler from converting this back
+     * into a memcpy call. */
+    {
+        volatile uint8_t *src = t->textbuf;
+        for (int i = 0; i < TERM_TEXTBUF_SIZE; i++)
+            paint_shadow[i] = src[i];
+    }
 
     /* Compute client-area origin in screen coordinates directly,
      * bypassing wd_begin/wd_end to avoid per-pixel clipping overhead. */
@@ -124,8 +148,9 @@ static void terminal_paint(hwnd_t hwnd) {
             int sx = ox + col * TERM_FONT_W;
             if (sx + TERM_FONT_W <= 0 || sx >= DISPLAY_WIDTH) continue;
 
-            uint8_t ch   = TB_CHAR(t, row, col);
-            uint8_t attr = TB_ATTR(t, row, col);
+            int off = (row * TERM_COLS + col) * 2;
+            uint8_t ch   = paint_shadow[off];
+            uint8_t attr = paint_shadow[off + 1];
             uint8_t fg   = TB_FG(attr);
             uint8_t bg   = TB_BG(attr);
 
@@ -233,23 +258,28 @@ hwnd_t terminal_create(void) {
     t->bg_color = COLOR_BLACK;
     t->cursor_visible = true;
 
-    /* Allocate text-mode buffer (large enough for MOS2 op_console compat) */
-    t->textbuf_size = SCREEN_BUF_COMPAT_SIZE;
-    t->textbuf = (uint8_t *)pvPortMalloc(t->textbuf_size);
+    /* Allocate text-mode buffer.
+     * TODO: PSRAM textbufs cause QMI bus hangs when ISRs fire during
+     * uncached PSRAM access (write buffer drain + flash fetch contention).
+     * Force SRAM until the QMI interleaving issue is resolved. */
+    t->textbuf_size = TERM_TEXTBUF_SIZE;
+#if 0  /* PSRAM disabled — causes bus hang, see above */
+    if (psram_is_available())
+        t->textbuf = (uint8_t *)psram_alloc(t->textbuf_size);
+#endif
+    if (!t->textbuf)
+        t->textbuf = (uint8_t *)pvPortMalloc(t->textbuf_size);
     if (!t->textbuf) {
         vPortFree(t);
         return HWND_NULL;
     }
+    printf("[terminal_create] textbuf=%p size=%u\n",
+           t->textbuf, (unsigned)t->textbuf_size);
     /* Fill with spaces, white-on-black */
     uint8_t attr = TB_PACK(COLOR_WHITE, COLOR_BLACK);
     for (int i = 0; i < TERM_COLS * TERM_ROWS; i++) {
         t->textbuf[i * 2]     = ' ';
         t->textbuf[i * 2 + 1] = attr;
-    }
-    /* Zero any padding beyond the text area */
-    if (t->textbuf_size > TERM_TEXTBUF_SIZE) {
-        memset(t->textbuf + TERM_TEXTBUF_SIZE, 0,
-               t->textbuf_size - TERM_TEXTBUF_SIZE);
     }
 
     /* Create input semaphore */
@@ -319,9 +349,9 @@ void terminal_destroy(terminal_t *t) {
         t->input_sem = NULL;
     }
 
-    /* Free text buffer */
+    /* Free text buffer (psram_free handles both PSRAM and SRAM pointers) */
     if (t->textbuf) {
-        vPortFree(t->textbuf);
+        psram_free(t->textbuf);
         t->textbuf = NULL;
     }
 
@@ -329,7 +359,7 @@ void terminal_destroy(terminal_t *t) {
     vPortFree(t);
 }
 
-void terminal_putc(terminal_t *t, char c) {
+void __not_in_flash_func(terminal_putc)(terminal_t *t, char c) {
     if (!t || !t->textbuf) return;
 
     switch (c) {
@@ -395,7 +425,7 @@ void terminal_printf(terminal_t *t, const char *fmt, ...) {
     terminal_puts(t, buf);
 }
 
-void terminal_clear(terminal_t *t, uint8_t color) {
+void __not_in_flash_func(terminal_clear)(terminal_t *t, uint8_t color) {
     if (!t || !t->textbuf) return;
     t->bg_color = color;
     uint8_t attr = TB_PACK(t->fg_color, color);
@@ -420,8 +450,10 @@ void terminal_set_color(terminal_t *t, uint8_t fg, uint8_t bg) {
     t->bg_color = bg & 0x0F;
 }
 
-void terminal_draw_text(terminal_t *t, const char *str, int col, int row,
-                        uint8_t fg, uint8_t bg) {
+/* Run from SRAM to avoid QMI bus contention between PSRAM data writes
+ * (CS1) and flash instruction fetches (CS0) through the shared QMI. */
+void __not_in_flash_func(terminal_draw_text)(terminal_t *t, const char *str,
+                        int col, int row, uint8_t fg, uint8_t bg) {
     if (!t || !t->textbuf || !str) return;
     if (row < 0 || row >= TERM_ROWS) return;
     uint8_t attr = TB_PACK(fg & 0x0F, bg & 0x0F);
