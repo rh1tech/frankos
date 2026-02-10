@@ -1,10 +1,9 @@
-/**
- * Unified PS/2 Driver for RP2350
- * 
- * Supports both keyboard and mouse on the same PIO with different state machines.
- * Uses a single PIO program instance shared between devices.
- * 
- * SPDX-License-Identifier: GPL-2.0-or-later
+/*
+ * FRANK OS
+ * Copyright (c) 2025 Mikhail Matveev <xtreme@rh1.tech>
+ * https://rh1.tech
+ *
+ * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
 #ifndef PS2_H

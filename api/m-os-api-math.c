@@ -1,3 +1,10 @@
+/*
+ * Originally from Murmulator OS 2 by DnCraptor
+ * https://github.com/DnCraptor/murmulator-os2
+ *
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
 // use it to resolve issues like memset and/or memcpy are not found on elf32 obj execution attempt
 #include "m-os-api.h"
 float __aeabi_fmul(float x, float y) { //         single-precision multiplication

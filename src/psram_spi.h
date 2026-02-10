@@ -1,4 +1,12 @@
 /*
+ * FRANK OS
+ * Copyright (c) 2025 Mikhail Matveev <xtreme@rh1.tech>
+ * https://rh1.tech
+ *
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
+/*
  * psram_spi.h - Stub for FRANK OS (no PSRAM hardware)
  *
  * Provides function declarations needed by sys_table.c.

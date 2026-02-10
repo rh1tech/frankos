@@ -1,4 +1,12 @@
 /*
+ * FRANK OS
+ * Copyright (c) 2025 Mikhail Matveev <xtreme@rh1.tech>
+ * https://rh1.tech
+ *
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
+/*
  * PS/2 Keyboard Scancode Decoder
  *
  * Reads raw PS/2 scancode set 2 bytes from the unified ps2 driver,
