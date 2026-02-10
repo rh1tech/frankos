@@ -54,6 +54,22 @@ FATFS* get_mount_fs(); // only one FS is supported foe now
 // to cleanup BOOTA memory region on the MOS flashing
 ///unsigned long __in_boota() __aligned(4096) cleanup_boota[] = { 0 };
 
+/* Defensive qsort wrapper: validate comparison function pointer before calling.
+ * Catches out-of-bounds function-table lookups (e.g. stale .mc.sav with
+ * incompatible struct layout producing a wild sort_type index). */
+static void safe_qsort(void *base, size_t nmemb, size_t size,
+                        int (*compar)(const void *, const void *)) {
+    uintptr_t p = (uintptr_t)(void *)compar;
+    /* Valid code lives in flash (0x10000000) or SRAM (0x20000000) */
+    bool ok = (p >= 0x10000000u && p < 0x10400000u)
+           || (p >= 0x20000000u && p < 0x20080000u);
+    if (!ok) {
+        printf("[safe_qsort] BAD cmp=%p — skipping sort\n", (void *)compar);
+        return;
+    }
+    qsort(base, nmemb, size, compar);
+}
+
 unsigned long __in_systable() __aligned(4096) sys_table_ptrs[] = {
     // task.h
     xTaskCreate, // 0
@@ -259,7 +275,7 @@ unsigned long __in_systable() __aligned(4096) sys_table_ptrs[] = {
     memcpy, // 167
     vga_dma_channel_set_read_addr, // 168
     //
-    qsort, // 169
+    safe_qsort, // 169
     strnlen,  // 170
     flash_do_cmd, // 171
     flash_range_erase, // 172

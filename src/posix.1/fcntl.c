@@ -434,49 +434,36 @@ void __in_hfa() init_pfiles(cmd_ctx_t* ctx) {
 }
 
 void __in_hfa() cleanup_pfiles(cmd_ctx_t* ctx) {
-    if (!ctx || !ctx->pfiles) { printf("[cleanup_pfiles] no pfiles\n"); return; }
-    printf("[cleanup_pfiles] %u entries\n", (unsigned)ctx->pfiles->size);
+    if (!ctx || !ctx->pfiles) return;
     for (size_t i = 0; i < ctx->pfiles->size; ++i) {
         FDESC* fd = (FDESC*)array_get_at(ctx->pfiles, i);
-        if (!fd) continue; // placeholder, just skip it
+        if (!fd) continue;
         FIL* fp = fd->fp;
-        printf("[cleanup_pfiles] [%u] fd=%p fp=%p\n", (unsigned)i, fd, fp);
         if ((intptr_t)fp > STDERR_FILENO) {
             if (fp->pending_descriptors > 0) {
                 fp->pending_descriptors--;
-                printf("[cleanup_pfiles] [%u] pending_descriptors dec'd\n", (unsigned)i);
                 continue;
             }
             if (fp->obj.fs != 0) {
-                printf("[cleanup_pfiles] [%u] f_close...\n", (unsigned)i);
                 f_close(fp);
             }
             vPortFree(fp);
         }
         vPortFree(fd);
-        printf("[cleanup_pfiles] [%u] freed\n", (unsigned)i);
     }
-    printf("[cleanup_pfiles] freeing pfiles array\n");
     vPortFree(ctx->pfiles);
     ctx->pfiles = 0;
     if (ctx->pdirs) {
-        printf("[cleanup_pfiles] deleting pdirs size=%u\n", (unsigned)ctx->pdirs->size);
         for (size_t i = 0; i < ctx->pdirs->size; ++i) {
-            printf("[cleanup_pfiles] pdir[%u]=%p\n", (unsigned)i, ctx->pdirs->p[i]);
             if (ctx->pdirs->p[i]) {
                 DIR *pd = (DIR *)ctx->pdirs->p[i];
-                printf("[cleanup_pfiles] pdir[%u] dirent=%p dirname=%p('%s')\n",
-                       (unsigned)i, pd->dirent, pd->dirname, pd->dirname ? pd->dirname : "null");
                 dealloc_dir(pd);
-                printf("[cleanup_pfiles] pdir[%u] freed\n", (unsigned)i);
             }
         }
-        printf("[cleanup_pfiles] freeing pdirs arrays\n");
         vPortFree(ctx->pdirs->p);
         vPortFree(ctx->pdirs);
         ctx->pdirs = 0;
     }
-    printf("[cleanup_pfiles] done\n");
 }
 
 static BYTE __in_hfa() map_flags_to_ff_mode(int flags) {

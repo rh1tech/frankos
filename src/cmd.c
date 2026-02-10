@@ -11,12 +11,13 @@ const char _cmd_history[] = ".cmd_history";
 
 static cmd_ctx_t ctx = { 0 };
 
-extern uint32_t butter_psram_size;
+extern uint32_t butter_psram_size_var;
 size_t __in_hfa() get_heap_total() {
-    return configTOTAL_HEAP_SIZE + butter_psram_size;
+    return configTOTAL_HEAP_SIZE + butter_psram_size_var;
 }
 char* __in_hfa() copy_str(const char* s) {
     char* res = (char*)pvPortMalloc(strlen(s) + 1);
+    if (!res) return NULL;
     strcpy(res, s);
     return res;
 }
@@ -68,7 +69,6 @@ cmd_ctx_t* __in_hfa() clone_ctx(cmd_ctx_t* src) {
 
 void cleanup_pfiles(cmd_ctx_t* ctx);
 void __in_hfa() cleanup_ctx(cmd_ctx_t* src) {
-    printf("[cleanup_ctx] start src=%p\n", src);
     if (src->argv) {
         for(int i = 0; i < src->argc; ++i) {
             vPortFree(src->argv[i]);
@@ -81,7 +81,6 @@ void __in_hfa() cleanup_ctx(cmd_ctx_t* src) {
         vPortFree(src->orig_cmd);
         src->orig_cmd = 0;
     }
-    printf("[cleanup_ctx] argv+orig freed\n");
     if (src->std_in) {
         f_close(src->std_in);
         vPortFree(src->std_in);
@@ -110,11 +109,8 @@ void __in_hfa() cleanup_ctx(cmd_ctx_t* src) {
         src->user_data = 0;
     }
     src->forse_flash = false;
-    printf("[cleanup_ctx] calling cleanup_pfiles pfiles=%p\n", src->pfiles);
     cleanup_pfiles(src);
-    printf("[cleanup_ctx] cleanup_pfiles done, calling __free_ctx pallocs=%p\n", src->pallocs);
     __free_ctx(src);
-    printf("[cleanup_ctx] done\n");
 }
 void cleanup_bootb_ctx(cmd_ctx_t* ctx); // app
 void __in_hfa() remove_ctx(cmd_ctx_t* src) {
@@ -155,6 +151,14 @@ void __in_hfa() remove_ctx(cmd_ctx_t* src) {
     // gouta("remove_ctx <<\n");
 }
 cmd_ctx_t* __in_hfa() get_cmd_startup_ctx() {
+    /* In multi-terminal mode, prefer the current task's context so that
+     * each shell/app operates on its own cmd_ctx_t.  Fall back to the
+     * static ctx only during early boot or from tasks without TLS. */
+    const TaskHandle_t th = xTaskGetCurrentTaskHandle();
+    if (th) {
+        cmd_ctx_t* c = (cmd_ctx_t*)pvTaskGetThreadLocalStoragePointer(th, 0);
+        if (c) return c;
+    }
     return &ctx;
 }
 cmd_ctx_t* __in_hfa() get_cmd_ctx() {
@@ -204,33 +208,30 @@ char* __in_hfa() concat2(const char* s1, size_t s, const char* s2) {
 
 void __in_hfa() set_ctx_var(cmd_ctx_t* ctx, const char* key, const char* val) {
     if (!ctx || !key || !val) return;
-    //if (strcmp(key, "CD") == 0) {
-    //    f_chdir(val);
-    //}
-  //  taskENTER_CRITICAL();
     for (size_t i = 0; i < ctx->vars_num; ++i) {
         if (0 == strcmp(key, ctx->vars[i].key)) {
             if( ctx->vars[i].value ) {
                 vPortFree(ctx->vars[i].value);
             }
             ctx->vars[i].value = copy_str(val);
-            // goutf("%d/%d %s=%s\n", i+1, ctx->vars_num, key, ctx->vars[i].value);
-   //         taskEXIT_CRITICAL();
             return;
         }
     }
-    // not found
+    // not found — grow vars array
     if (ctx->vars == NULL) {
-        // initial state
         ctx->vars = (vars_t*)pvPortMalloc(sizeof(vars_t));
     } else {
         vars_t* old = ctx->vars;
-        ctx->vars = (vars_t*)pvPortMalloc( sizeof(vars_t) * (ctx->vars_num + 1) );
-        memcpy(ctx->vars, old, sizeof(vars_t) * ctx->vars_num);
+        vars_t* nv = (vars_t*)pvPortMalloc( sizeof(vars_t) * (ctx->vars_num + 1) );
+        if (!nv) return;  // out of memory — leave vars unchanged
+        memcpy(nv, old, sizeof(vars_t) * ctx->vars_num);
+        ctx->vars = nv;
         vPortFree(old);
     }
+    if (!ctx->vars) return;
     ctx->vars[ctx->vars_num].key = copy_str(key);
     ctx->vars[ctx->vars_num].value = copy_str(val);
+    if (!ctx->vars[ctx->vars_num].key || !ctx->vars[ctx->vars_num].value) return;
     ctx->vars_num++;
     // goutf("%d/%d %s=%s\n", ctx->vars_num, ctx->vars_num, key, ctx->vars[ctx->vars_num - 1].value);
    // taskEXIT_CRITICAL();
@@ -665,6 +666,8 @@ void __in_hfa() op_console(cmd_ctx_t* ctx, FRFpvUpU_ptr_t fn, BYTE mode) {
         goto r;
     }
     size_t sz = (get_screen_width() * get_screen_height() * get_screen_bitness()) >> 3;
+    size_t buf_sz = get_buffer_size();
+    if (sz > buf_sz) sz = buf_sz;  /* clamp to actual buffer allocation */
     printf("[op_console] buf=%p sz=%u\n", get_buffer(), (unsigned)sz);
     UINT rb;
     fn(pfh, get_buffer(), sz, &rb);

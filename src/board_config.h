@@ -45,6 +45,26 @@
 #define SDCARD_PIN_D3   5   /* SPI0 CSn */
 
 //=============================================================================
+// PSRAM (QSPI CS1 — pin depends on RP2350 package variant)
+//   RP2350A (QFN-60, 30 GPIO): GPIO 8  (M2 board layout)
+//   RP2350B (QFN-80, 48 GPIO): GPIO 47
+//=============================================================================
+#define PSRAM_PIN_RP2350A 8
+#define PSRAM_PIN_RP2350B 47
+
+#if PICO_RP2350
+#include "hardware/structs/sysinfo.h"
+static inline uint get_psram_pin(void) {
+    uint32_t package_sel = *((io_ro_32 *)(SYSINFO_BASE + SYSINFO_PACKAGE_SEL_OFFSET));
+    if (package_sel & 1) {
+        return PSRAM_PIN_RP2350A;
+    } else {
+        return PSRAM_PIN_RP2350B;
+    }
+}
+#endif
+
+//=============================================================================
 // Audio (not connected on Rhea — stubs for MOS2 compat)
 //=============================================================================
 #define PWM_PIN0    20
