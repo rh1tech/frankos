@@ -1,4 +1,12 @@
 /*
+ * FRANK OS
+ * Copyright (c) 2025 Mikhail Matveev <xtreme@rh1.tech>
+ * https://rh1.tech
+ *
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
+/*
  * font8x16.c -- 8x16 bitmap font, CP866 encoding (256 glyphs)
  *
  * Full 0x00-0xFF character set: ASCII + Cyrillic + box drawing.

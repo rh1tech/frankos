@@ -1,3 +1,10 @@
+/*
+ * Originally from Murmulator OS 2 by DnCraptor
+ * https://github.com/DnCraptor/murmulator-os2
+ *
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
 // /usr/include/sys/stat.h
 #ifndef _SYS_STAT_H_
 #define _SYS_STAT_H_

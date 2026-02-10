@@ -1,3 +1,10 @@
+/*
+ * Originally from Murmulator OS 2 by DnCraptor
+ * https://github.com/DnCraptor/murmulator-os2
+ *
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
 #ifndef __system_terminal_h__
 #define __system_terminal_h__
 

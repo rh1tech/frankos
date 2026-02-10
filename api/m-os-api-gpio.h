@@ -1,3 +1,10 @@
+/*
+ * Originally from Murmulator OS 2 by DnCraptor
+ * https://github.com/DnCraptor/murmulator-os2
+ *
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
 #ifndef PICO_GPIO
 #define PICO_GPIO
 

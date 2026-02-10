@@ -1,4 +1,12 @@
 /*
+ * FRANK OS
+ * Copyright (c) 2025 Mikhail Matveev <xtreme@rh1.tech>
+ * https://rh1.tech
+ *
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
+/*
  * FreeRTOS extensions for MOS2 compatibility.
  * Provides pvPortRealloc which MOS2's musl layer requires
  * but standard FreeRTOS Heap4 doesn't include.

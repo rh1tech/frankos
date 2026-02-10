@@ -1,3 +1,10 @@
+/*
+ * Originally from Murmulator OS 2 by DnCraptor
+ * https://github.com/DnCraptor/murmulator-os2
+ *
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
 /*	$OpenBSD: ctype.h,v 1.2 2025/02/07 03:03:31 jsg Exp $	*/
 /*
  * Copyright (c) 2015 Mark Kettenis

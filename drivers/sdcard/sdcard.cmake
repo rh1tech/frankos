@@ -1,3 +1,11 @@
+/*
+ * FRANK OS
+ * Copyright (c) 2025 Mikhail Matveev <xtreme@rh1.tech>
+ * https://rh1.tech
+ *
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
 if (NOT TARGET sdcard)
     add_library(sdcard INTERFACE)
     pico_generate_pio_header(sdcard ${CMAKE_CURRENT_LIST_DIR}/spi.pio)

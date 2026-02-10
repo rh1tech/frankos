@@ -1,4 +1,12 @@
 /*
+ * FRANK OS
+ * Copyright (c) 2025 Mikhail Matveev <xtreme@rh1.tech>
+ * https://rh1.tech
+ *
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
+/*
  * PSRAM detection and free-list allocator for FRANK OS.
  *
  * Both detection and the allocator use the UNCACHED XIP window

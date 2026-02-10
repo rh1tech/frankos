@@ -1,4 +1,12 @@
 /*
+ * FRANK OS
+ * Copyright (c) 2025 Mikhail Matveev <xtreme@rh1.tech>
+ * https://rh1.tech
+ *
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
+/*
  * MOS2 compatibility stubs for FRANK OS.
  *
  * Provides no-op implementations for MOS2 subsystems that FRANK OS doesn't have

@@ -1,10 +1,9 @@
-/**
- * Unified PS/2 Driver for RP2350
- * 
- * Single PIO program shared between keyboard and mouse state machines.
- * Uses interrupt-driven streaming mode for performant, non-blocking operation.
- * 
- * SPDX-License-Identifier: GPL-2.0-or-later
+/*
+ * FRANK OS
+ * Copyright (c) 2025 Mikhail Matveev <xtreme@rh1.tech>
+ * https://rh1.tech
+ *
+ * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
 #include "ps2.h"
