@@ -75,4 +75,10 @@ void wd_line(int16_t x0, int16_t y0, int16_t x1, int16_t y1, uint8_t color);
 void wd_bevel_rect(int16_t x, int16_t y, int16_t w, int16_t h,
                     uint8_t light, uint8_t dark, uint8_t face);
 
+/* Single character using the 6×12 UI font */
+void wd_char_ui(int16_t x, int16_t y, char c, uint8_t fg, uint8_t bg);
+
+/* Text string using the 6×12 UI font */
+void wd_text_ui(int16_t x, int16_t y, const char *str, uint8_t fg, uint8_t bg);
+
 #endif /* WINDOW_DRAW_H */

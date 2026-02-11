@@ -177,3 +177,16 @@ void wd_bevel_rect(int16_t x, int16_t y, int16_t w, int16_t h,
     wd_hline(x, y + h - 1, w, dark);
     wd_vline(x + w - 1, y, h, dark);
 }
+
+void wd_char_ui(int16_t x, int16_t y, char c, uint8_t fg, uint8_t bg) {
+    if (!draw_ctx.active) return;
+    char s[2] = { c, '\0' };
+    gfx_text_ui_clipped(draw_ctx.ox + x, draw_ctx.oy + y, s, fg, bg,
+                         draw_ctx.ox, draw_ctx.oy, draw_ctx.cw, draw_ctx.ch);
+}
+
+void wd_text_ui(int16_t x, int16_t y, const char *str, uint8_t fg, uint8_t bg) {
+    if (!draw_ctx.active) return;
+    gfx_text_ui_clipped(draw_ctx.ox + x, draw_ctx.oy + y, str, fg, bg,
+                         draw_ctx.ox, draw_ctx.oy, draw_ctx.cw, draw_ctx.ch);
+}

@@ -1453,6 +1453,26 @@ e:
     vTaskDelete( NULL );
 }
 
+void __in_hfa() launch_elf_app(const char *path) {
+    cmd_ctx_t *ctx = get_cmd_startup_ctx();
+    /* Set up a fresh context for this ELF */
+    if (ctx->orig_cmd) vPortFree(ctx->orig_cmd);
+    ctx->orig_cmd = copy_str(path);
+    if (ctx->argv) {
+        for (uint32_t i = 0; i < ctx->argc; i++) {
+            if (ctx->argv[i]) vPortFree(ctx->argv[i]);
+        }
+        vPortFree(ctx->argv);
+    }
+    ctx->argc = 1;
+    ctx->argv = (char**)pvPortCalloc(2, sizeof(char*));
+    ctx->argv[0] = copy_str(path);
+    ctx->detached = true;
+    if (is_new_app(ctx) && load_app(ctx)) {
+        exec(ctx);
+    }
+}
+
 // support sygnal for current "sync_ctx" context only for now
 void __in_hfa() app_signal(void) {
     if (bootb_sync_signal) bootb_sync_signal(15);

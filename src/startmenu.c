@@ -12,18 +12,22 @@
 #include "window_event.h"
 #include "window_theme.h"
 #include "terminal.h"
+#include "app.h"
 #include "gfx.h"
 #include "font.h"
 #include "display.h"
+#include "sdcard_init.h"
+#include "ff.h"
 #include <string.h>
+#include <ctype.h>
 
 /*==========================================================================
  * Start menu item definitions
  *=========================================================================*/
 
-#define SM_ID_TERMINAL   1
-#define SM_ID_REBOOT     2
-#define SM_ID_FIRMWARE   3
+#define SM_ID_TERMINAL      1
+#define SM_ID_REBOOT        2
+#define SM_ID_FIRMWARE      3
 
 #define SM_ITEM_HEIGHT  24
 #define SM_SEPARATOR_H   8
@@ -46,6 +50,78 @@ static const sm_item_t sm_items[] = {
 #define SM_ITEM_COUNT  (sizeof(sm_items) / sizeof(sm_items[0]))
 
 /*==========================================================================
+ * Dynamic /fos/ app scanning
+ *=========================================================================*/
+
+#define FOS_MAX_APPS 16
+#define FOS_NAME_LEN 20
+#define FOS_PATH_LEN 32
+
+static struct {
+    char name[FOS_NAME_LEN];  /* display name from .inf */
+    char path[FOS_PATH_LEN];  /* e.g. "/fos/minesweeper" */
+} fos_apps[FOS_MAX_APPS];
+static int fos_app_count = 0;
+
+static void fos_scan(void) {
+    fos_app_count = 0;
+    if (!sdcard_is_mounted()) return;
+
+    DIR dir;
+    FILINFO fno;
+    if (f_opendir(&dir, "/fos") != FR_OK) return;
+
+    while (fos_app_count < FOS_MAX_APPS) {
+        if (f_readdir(&dir, &fno) != FR_OK || fno.fname[0] == 0)
+            break;
+        /* Skip directories */
+        if (fno.fattrib & AM_DIR) continue;
+        /* Skip .inf metadata files */
+        const char *dot = strrchr(fno.fname, '.');
+        if (dot && strcmp(dot, ".inf") == 0) continue;
+
+        /* Build path */
+        snprintf(fos_apps[fos_app_count].path,
+                 FOS_PATH_LEN, "/fos/%s", fno.fname);
+
+        /* Try to read display name from companion .inf file */
+        char inf_path[FOS_PATH_LEN + 4];
+        snprintf(inf_path, sizeof(inf_path), "/fos/%s.inf", fno.fname);
+        FIL f;
+        bool got_name = false;
+        if (f_open(&f, inf_path, FA_READ) == FR_OK) {
+            UINT br;
+            char buf[FOS_NAME_LEN];
+            if (f_read(&f, buf, FOS_NAME_LEN - 1, &br) == FR_OK && br > 0) {
+                buf[br] = '\0';
+                /* Trim at first newline */
+                char *nl = strchr(buf, '\n');
+                if (nl) *nl = '\0';
+                nl = strchr(buf, '\r');
+                if (nl) *nl = '\0';
+                if (buf[0]) {
+                    strncpy(fos_apps[fos_app_count].name, buf, FOS_NAME_LEN - 1);
+                    fos_apps[fos_app_count].name[FOS_NAME_LEN - 1] = '\0';
+                    got_name = true;
+                }
+            }
+            f_close(&f);
+        }
+
+        /* Fallback: capitalize filename */
+        if (!got_name) {
+            strncpy(fos_apps[fos_app_count].name, fno.fname, FOS_NAME_LEN - 1);
+            fos_apps[fos_app_count].name[FOS_NAME_LEN - 1] = '\0';
+            fos_apps[fos_app_count].name[0] =
+                toupper((unsigned char)fos_apps[fos_app_count].name[0]);
+        }
+
+        fos_app_count++;
+    }
+    f_closedir(&dir);
+}
+
+/*==========================================================================
  * Internal state
  *=========================================================================*/
 
@@ -57,16 +133,6 @@ static int16_t sm_x, sm_y, sm_w, sm_h;
 static bool   sub_open = false;
 static int8_t sub_hover = -1;
 static int16_t sub_x, sub_y, sub_w, sub_h;
-
-typedef struct {
-    const char *text;
-    uint8_t id;
-} sub_item_t;
-
-static const sub_item_t sub_items[] = {
-    { "Terminal", SM_ID_TERMINAL },
-};
-#define SUB_ITEM_COUNT (sizeof(sub_items) / sizeof(sub_items[0]))
 
 /*==========================================================================
  * Geometry
@@ -85,7 +151,7 @@ static void compute_menu_rect(void) {
 
 static void compute_sub_rect(void) {
     sub_w = 120;
-    sub_h = 4 + SUB_ITEM_COUNT * SM_ITEM_HEIGHT;
+    sub_h = 4 + (fos_app_count + 1) * SM_ITEM_HEIGHT;
     sub_x = sm_x + sm_w;
     /* Align with the Programs item */
     sub_y = sm_y + 1;
@@ -99,6 +165,7 @@ void startmenu_toggle(void) {
     if (sm_open) {
         startmenu_close();
     } else {
+        fos_scan();  /* re-scan /fos/ each time menu opens */
         sm_open = true;
         sm_hover = -1;
         sub_open = false;
@@ -126,6 +193,16 @@ bool startmenu_is_open(void) {
 
 /* Declared in main.c */
 extern void spawn_terminal_window(void);
+
+static void execute_sub_item(int index) {
+    startmenu_close();
+    if (index < fos_app_count) {
+        launch_elf_app(fos_apps[index].path);
+    } else {
+        /* Last item is always Terminal */
+        spawn_terminal_window();
+    }
+}
 
 static void execute_item(uint8_t id) {
     startmenu_close();
@@ -195,6 +272,7 @@ void startmenu_draw(void) {
 
     /* Draw Programs submenu if open */
     if (sub_open) {
+        int sub_count = fos_app_count + 1; /* apps + Terminal */
         gfx_fill_rect(sub_x, sub_y, sub_w, sub_h, THEME_BUTTON_FACE);
         gfx_hline(sub_x, sub_y, sub_w, COLOR_WHITE);
         gfx_vline(sub_x, sub_y, sub_h, COLOR_WHITE);
@@ -202,13 +280,15 @@ void startmenu_draw(void) {
         gfx_vline(sub_x + sub_w - 1, sub_y, sub_h, COLOR_DARK_GRAY);
 
         int sy = sub_y + 2;
-        for (int i = 0; i < (int)SUB_ITEM_COUNT; i++) {
+        for (int i = 0; i < sub_count; i++) {
             bool hovered = (i == sub_hover);
             uint8_t bg = hovered ? COLOR_BLUE : THEME_BUTTON_FACE;
             uint8_t fg = hovered ? COLOR_WHITE : COLOR_BLACK;
             gfx_fill_rect(sub_x + 2, sy, sub_w - 4, SM_ITEM_HEIGHT, bg);
+            const char *label = (i < fos_app_count)
+                                ? fos_apps[i].name : "Terminal";
             gfx_text_ui(sub_x + 6, sy + (SM_ITEM_HEIGHT - FONT_UI_HEIGHT) / 2,
-                        sub_items[i].text, fg, bg);
+                        label, fg, bg);
             sy += SM_ITEM_HEIGHT;
         }
     }
@@ -224,10 +304,11 @@ bool startmenu_mouse(uint8_t type, int16_t x, int16_t y) {
     /* Check submenu first */
     if (sub_open && x >= sub_x && x < sub_x + sub_w &&
         y >= sub_y && y < sub_y + sub_h) {
+        int sub_count = fos_app_count + 1;
         if (type == WM_MOUSEMOVE || type == WM_LBUTTONDOWN) {
             int iy = sub_y + 2;
             sub_hover = -1;
-            for (int i = 0; i < (int)SUB_ITEM_COUNT; i++) {
+            for (int i = 0; i < sub_count; i++) {
                 if (y >= iy && y < iy + SM_ITEM_HEIGHT) {
                     sub_hover = i;
                     break;
@@ -237,7 +318,7 @@ bool startmenu_mouse(uint8_t type, int16_t x, int16_t y) {
             wm_mark_dirty();
         }
         if (type == WM_LBUTTONUP && sub_hover >= 0) {
-            execute_item(sub_items[sub_hover].id);
+            execute_sub_item(sub_hover);
         }
         return true;
     }
@@ -296,15 +377,16 @@ bool startmenu_handle_key(uint8_t hid_code, uint8_t modifiers) {
     (void)modifiers;
 
     if (sub_open) {
+        int sub_count = fos_app_count + 1;
         switch (hid_code) {
         case 0x52: /* UP */
             sub_hover--;
-            if (sub_hover < 0) sub_hover = SUB_ITEM_COUNT - 1;
+            if (sub_hover < 0) sub_hover = sub_count - 1;
             wm_mark_dirty();
             return true;
         case 0x51: /* DOWN */
             sub_hover++;
-            if (sub_hover >= (int)SUB_ITEM_COUNT) sub_hover = 0;
+            if (sub_hover >= sub_count) sub_hover = 0;
             wm_mark_dirty();
             return true;
         case 0x50: /* LEFT — close submenu */
@@ -313,7 +395,7 @@ bool startmenu_handle_key(uint8_t hid_code, uint8_t modifiers) {
             wm_mark_dirty();
             return true;
         case 0x28: /* ENTER */
-            if (sub_hover >= 0) execute_item(sub_items[sub_hover].id);
+            if (sub_hover >= 0) execute_sub_item(sub_hover);
             return true;
         case 0x29: /* ESC */
             sub_open = false;
