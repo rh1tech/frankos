@@ -129,4 +129,7 @@ void terminal_invalidate_active(void);
 /* Notify per-terminal stdin waiters (called from keyboard.c) */
 void terminal_notify_stdin_ready(terminal_t *t);
 
+/* Spawn a new terminal window with its own shell task (defined in main.c) */
+void spawn_terminal_window(void);
+
 #endif /* TERMINAL_H */

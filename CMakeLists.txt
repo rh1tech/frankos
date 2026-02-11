@@ -54,8 +54,16 @@ add_executable(frankos
     src/window_event.c
     src/window_draw.c
     src/sdcard_init.c
+    src/font_ui.c
+    src/font_ui_bold.c
     src/terminal.c
     src/shell.c
+    src/menu.c
+    src/taskbar.c
+    src/startmenu.c
+    src/sysmenu.c
+    src/dialog.c
+    src/dialog_icons.c
 
     # MOS2 core (copied from murmulator-os2)
     src/app.c

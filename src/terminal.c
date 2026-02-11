@@ -11,8 +11,10 @@
 #include "window_event.h"
 #include "window_draw.h"
 #include "window_theme.h"
+#include "menu.h"
 #include "font.h"
 #include "display.h"
+#include "dialog.h"
 #include "FreeRTOS.h"
 #include "semphr.h"
 #include "timers.h"
@@ -139,7 +141,7 @@ static void __not_in_flash_func(terminal_paint)(hwnd_t hwnd) {
     if (!win) return;
     int ox, oy;
     if (win->flags & WF_BORDER) {
-        point_t origin = theme_client_origin(&win->frame);
+        point_t origin = theme_client_origin(&win->frame, win->flags);
         ox = origin.x;
         oy = origin.y;
     } else {
@@ -201,6 +203,27 @@ static void __not_in_flash_func(terminal_paint)(hwnd_t hwnd) {
  * Event handler — keyboard input
  *=========================================================================*/
 
+/* Terminal menu command IDs */
+#define TCMD_FILE_EXIT    1
+#define TCMD_HELP_ABOUT 100
+
+/* Force-close: signal shell, destroy window immediately */
+static void terminal_force_close(terminal_t *t, hwnd_t hwnd) {
+    t->closing = true;
+    if (t->input_sem) xSemaphoreGive(t->input_sem);
+    if (t->blink_timer) {
+        xTimerStop(t->blink_timer, 0);
+        xTimerDelete(t->blink_timer, 0);
+        t->blink_timer = NULL;
+    }
+    {
+        window_t *w = wm_get_window(hwnd);
+        if (w) w->user_data = NULL;
+    }
+    wm_destroy_window(hwnd);
+    t->hwnd = HWND_NULL;
+}
+
 static bool terminal_event(hwnd_t hwnd, const window_event_t *event) {
     terminal_t *t = terminal_from_hwnd(hwnd);
     if (!t) return false;
@@ -219,9 +242,23 @@ static bool terminal_event(hwnd_t hwnd, const window_event_t *event) {
         }
         return false;
 
+    case WM_COMMAND:
+        switch (event->command.id) {
+        case TCMD_FILE_EXIT:
+            terminal_force_close(t, hwnd);
+            return true;
+        case TCMD_HELP_ABOUT:
+            dialog_show(hwnd, "About",
+                        "FRANK OS\n\nVersion 1.00\n"
+                        "Copyright (c) 2026 Mikhail Matveev\n"
+                        "rh1.tech",
+                        DLG_ICON_INFO, DLG_BTN_OK);
+            return true;
+        }
+        return false;
+
     case WM_CLOSE:
-        /* Signal the shell task to exit */
-        t->closing = true;
+        terminal_force_close(t, hwnd);
         return true;
 
     default:
@@ -295,16 +332,17 @@ hwnd_t terminal_create(void) {
 
     /* Compute outer window size:
      * client = 560 x 320 (70 cols * 8px, 20 rows * 16px)
-     * + title bar + borders */
+     * + title bar + menu bar + borders */
     int16_t client_w = TERM_COLS * TERM_FONT_W;  /* 560 */
     int16_t client_h = TERM_ROWS * TERM_FONT_H;  /* 320 */
     int16_t outer_w = client_w + 2 * THEME_BORDER_WIDTH;
-    int16_t outer_h = client_h + THEME_TITLE_HEIGHT + 2 * THEME_BORDER_WIDTH;
+    int16_t outer_h = client_h + THEME_TITLE_HEIGHT + THEME_MENU_HEIGHT +
+                      2 * THEME_BORDER_WIDTH;
 
     t->hwnd = wm_create_window(
         10, 10, outer_w, outer_h,
         "Terminal",
-        WF_CLOSABLE | WF_MOVABLE | WF_BORDER,
+        WF_CLOSABLE | WF_MOVABLE | WF_BORDER | WF_MENUBAR,
         terminal_event,
         terminal_paint
     );
@@ -321,6 +359,31 @@ hwnd_t terminal_create(void) {
     if (win) {
         win->bg_color = COLOR_BLACK;
         win->user_data = t;
+    }
+
+    /* Attach menu bar: File (Exit), Help (About) */
+    {
+        menu_bar_t bar;
+        memset(&bar, 0, sizeof(bar));
+        bar.menu_count = 2;
+
+        /* File menu — Alt+F (HID 'F' = 0x09) */
+        menu_def_t *file = &bar.menus[0];
+        strncpy(file->title, "File", sizeof(file->title) - 1);
+        file->accel_key = 0x09;  /* HID_KEY_F */
+        file->item_count = 1;
+        strncpy(file->items[0].text, "Exit", sizeof(file->items[0].text) - 1);
+        file->items[0].command_id = TCMD_FILE_EXIT;
+
+        /* Help menu — Alt+H (HID 'H' = 0x0B) */
+        menu_def_t *help = &bar.menus[1];
+        strncpy(help->title, "Help", sizeof(help->title) - 1);
+        help->accel_key = 0x0B;  /* HID_KEY_H */
+        help->item_count = 1;
+        strncpy(help->items[0].text, "About", sizeof(help->items[0].text) - 1);
+        help->items[0].command_id = TCMD_HELP_ABOUT;
+
+        menu_set(t->hwnd, &bar);
     }
 
     /* Start cursor blink timer (500ms) — pass terminal_t* as timer ID */
@@ -486,6 +549,7 @@ int terminal_get_cursor_row(terminal_t *t) {
 int terminal_getch(terminal_t *t) {
     if (!t) return -1;
     xSemaphoreTake(t->input_sem, portMAX_DELAY);
+    if (t->closing) return -1;
     uint8_t ch = t->input_buf[t->in_tail];
     t->in_tail = (t->in_tail + 1) & 63;
     return ch;

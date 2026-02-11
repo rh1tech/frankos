@@ -178,7 +178,7 @@ static int shell_readline(terminal_t *t, char *buf, int maxlen) {
     int pos = 0;
     for (;;) {
         int ch = terminal_getch(t);
-        if (ch < 0) continue;
+        if (ch < 0) { buf[pos] = 0; return -1; }
 
         if (ch == '\n' || ch == '\r') {
             terminal_putc(t, '\n');

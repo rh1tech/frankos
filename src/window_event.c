@@ -10,6 +10,10 @@
 #include "window_theme.h"
 #include "cursor.h"
 #include "display.h"
+#include "menu.h"
+#include "taskbar.h"
+#include "startmenu.h"
+#include "sysmenu.h"
 #include <string.h>
 #include "hardware/sync.h"
 
@@ -54,6 +58,9 @@ static volatile uint8_t compositor_dirty = 1;
 #define DRAG_NONE    0
 #define DRAG_MOVE    1
 #define DRAG_RESIZE  2
+
+/* Modal dialog — when set, only this window receives input */
+static hwnd_t modal_hwnd = HWND_NULL;
 
 static uint8_t drag_mode  = DRAG_NONE;
 static hwnd_t  drag_hwnd  = HWND_NULL;
@@ -201,7 +208,7 @@ static inline void forward_mouse_event(uint8_t type, int16_t x, int16_t y,
     window_event_t ev;
     memset(&ev, 0, sizeof(ev));
     ev.type = type;
-    point_t co = theme_client_origin(&win->frame);
+    point_t co = theme_client_origin(&win->frame, win->flags);
     ev.mouse.x = x - co.x;
     ev.mouse.y = y - co.y;
     ev.mouse.buttons = buttons;
@@ -318,10 +325,43 @@ void wm_handle_mouse_input(uint8_t type, int16_t x, int16_t y, uint8_t buttons) 
         return;
     }
 
+    /* ---- Overlay mouse routing priority ---- */
+    /* Start menu first */
+    if (startmenu_is_open()) {
+        if (startmenu_mouse(type, x, y)) return;
+    }
+
+    /* System menu */
+    if (sysmenu_is_open()) {
+        if (sysmenu_mouse(type, x, y)) return;
+    }
+
+    /* Dropdown menu */
+    if (menu_is_open()) {
+        if (menu_dropdown_mouse(type, x, y)) return;
+    }
+
+    /* Taskbar */
+    if (type == WM_LBUTTONDOWN && taskbar_mouse_click(x, y)) return;
+
+    /* Close menus on desktop click */
+    if (type == WM_LBUTTONDOWN) {
+        if (startmenu_is_open()) startmenu_close();
+        if (sysmenu_is_open()) sysmenu_close();
+        if (menu_is_open()) menu_close();
+    }
+
     /* ---- Left button down: hit-test to decide action ---- */
     if (type == WM_LBUTTONDOWN) {
         hwnd_t target = wm_window_at_point(x, y);
         if (target == HWND_NULL) return;
+
+        /* Modal blocking: if a modal dialog is open and the click
+         * target is not the modal window, ignore the click. */
+        if (modal_hwnd != HWND_NULL && target != modal_hwnd) {
+            wm_invalidate(modal_hwnd); /* flash the dialog */
+            return;
+        }
 
         window_t *win = wm_get_window(target);
         if (!win) return;
@@ -354,6 +394,19 @@ void wm_handle_mouse_input(uint8_t type, int16_t x, int16_t y, uint8_t buttons) 
                         wm_maximize_window(target);
                     compositor_dirty = 1;
                 }
+                /* Non-resizable: button is disabled, do nothing */
+                return;
+
+            case HT_MINIMIZE:
+                wm_minimize_window(target);
+                compositor_dirty = 1;
+                return;
+
+            case HT_MENUBAR:
+                if (win->flags & WF_MENUBAR) {
+                    int bar_x = win->frame.x + THEME_BORDER_WIDTH;
+                    menu_bar_click(target, x - bar_x);
+                }
                 return;
 
             case HT_BORDER_L:  case HT_BORDER_R:
@@ -377,6 +430,11 @@ void wm_handle_mouse_input(uint8_t type, int16_t x, int16_t y, uint8_t buttons) 
 
     /* ---- Left button up (not dragging) ---- */
     if (type == WM_LBUTTONUP) {
+        /* Route to overlays first */
+        if (startmenu_is_open() && startmenu_mouse(type, x, y)) return;
+        if (sysmenu_is_open() && sysmenu_mouse(type, x, y)) return;
+        if (menu_is_open() && menu_dropdown_mouse(type, x, y)) return;
+
         hwnd_t focus = wm_get_focus();
         if (focus != HWND_NULL)
             forward_mouse_event(WM_LBUTTONUP, x, y, buttons, focus);
@@ -385,6 +443,11 @@ void wm_handle_mouse_input(uint8_t type, int16_t x, int16_t y, uint8_t buttons) 
 
     /* ---- Mouse move (not dragging) ---- */
     if (type == WM_MOUSEMOVE) {
+        /* Route to overlays first for hover tracking */
+        if (startmenu_is_open()) startmenu_mouse(type, x, y);
+        if (sysmenu_is_open()) sysmenu_mouse(type, x, y);
+        if (menu_is_open()) menu_dropdown_mouse(type, x, y);
+
         /* Update cursor shape based on what's under the pointer */
         cursor_type_t cur = CURSOR_ARROW;
         hwnd_t hover = wm_window_at_point(x, y);
@@ -417,4 +480,20 @@ bool wm_get_drag_outline(rect_t *outline) {
     if (drag_mode == DRAG_NONE) return false;
     if (outline) *outline = drag_rect;
     return true;
+}
+
+/*==========================================================================
+ * Modal dialog support
+ *=========================================================================*/
+
+void wm_set_modal(hwnd_t hwnd) {
+    modal_hwnd = hwnd;
+}
+
+void wm_clear_modal(void) {
+    modal_hwnd = HWND_NULL;
+}
+
+hwnd_t wm_get_modal(void) {
+    return modal_hwnd;
 }

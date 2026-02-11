@@ -47,4 +47,19 @@ void gfx_char_clipped(int x, int y, char c, uint8_t fg, uint8_t bg,
 void gfx_text_clipped(int x, int y, const char *str, uint8_t fg, uint8_t bg,
                        int cx, int cy, int cw, int ch);
 
+/* UI font (8x12) drawing functions — regular weight */
+void gfx_char_ui(int x, int y, char c, uint8_t fg, uint8_t bg);
+void gfx_text_ui(int x, int y, const char *str, uint8_t fg, uint8_t bg);
+void gfx_text_ui_clipped(int x, int y, const char *str, uint8_t fg, uint8_t bg,
+                          int cx, int cy, int cw, int ch);
+
+/* UI font (8x12) drawing functions — bold weight
+ * Uses a separate bold font array (W95font Bold variant).
+ * Used for window title bars and the Start button. */
+void gfx_char_ui_bold(int x, int y, char c, uint8_t fg, uint8_t bg);
+void gfx_text_ui_bold(int x, int y, const char *str, uint8_t fg, uint8_t bg);
+void gfx_text_ui_bold_clipped(int x, int y, const char *str,
+                               uint8_t fg, uint8_t bg,
+                               int cx, int cy, int cw, int ch);
+
 #endif /* GFX_H */

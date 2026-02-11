@@ -11,23 +11,23 @@
 #include <string.h>
 #include <stdio.h>
 
-// CGA/EGA 16-color palette (RGB888)
+// Windows 95 16-color palette (RGB888)
 static const uint32_t default_palette_rgb888[16] = {
     0x000000, // 0  Black
-    0x0000AA, // 1  Blue
-    0x00AA00, // 2  Green
-    0x00AAAA, // 3  Cyan
-    0xAA0000, // 4  Red
-    0xAA00AA, // 5  Magenta
-    0xAA5500, // 6  Brown
-    0xAAAAAA, // 7  Light Gray
-    0x555555, // 8  Dark Gray
-    0x5555FF, // 9  Light Blue
-    0x55FF55, // 10 Light Green
-    0x55FFFF, // 11 Light Cyan
-    0xFF5555, // 12 Light Red
-    0xFF55FF, // 13 Light Magenta
-    0xFFFF55, // 14 Yellow
+    0x000080, // 1  Blue (navy)
+    0x008000, // 2  Green
+    0x008080, // 3  Cyan (teal)
+    0x800000, // 4  Red (maroon)
+    0x800080, // 5  Magenta (purple)
+    0x808000, // 6  Brown (olive)
+    0xC0C0C0, // 7  Light Gray (silver)
+    0x808080, // 8  Dark Gray
+    0x0000FF, // 9  Light Blue
+    0x00FF00, // 10 Light Green (lime)
+    0x00FFFF, // 11 Light Cyan (aqua)
+    0xFF0000, // 12 Light Red
+    0xFF00FF, // 13 Light Magenta (fuchsia)
+    0xFFFF00, // 14 Yellow
     0xFFFFFF, // 15 White
 };
 

@@ -67,6 +67,7 @@ typedef uint8_t hwnd_t;
 #define WF_MOVABLE   (1u << 5)
 #define WF_BORDER    (1u << 6)
 #define WF_DIRTY     (1u << 7)
+#define WF_MENUBAR   (1u << 8)
 
 /*==========================================================================
  * Window state
@@ -105,7 +106,7 @@ typedef void (*paint_handler_t)(hwnd_t hwnd);
  *=========================================================================*/
 
 struct window {
-    uint8_t          flags;           /* WF_* bitfield */
+    uint16_t         flags;           /* WF_* bitfield */
     uint8_t          state;           /* WS_NORMAL / MINIMIZED / MAXIMIZED */
     rect_t           frame;           /* outer frame in screen coordinates */
     rect_t           restore_rect;    /* saved rect before maximize */
@@ -120,7 +121,7 @@ struct window {
 /* Size check — only meaningful on the 32-bit ARM target.
  * On 64-bit hosts (where clangd runs) pointers are 8 bytes. */
 #if defined(__arm__) || defined(__thumb__)
-_Static_assert(sizeof(window_t) <= 60, "window_t exceeds 60 bytes");
+_Static_assert(sizeof(window_t) <= 64, "window_t exceeds 64 bytes");
 #endif
 
 /*==========================================================================
@@ -133,7 +134,7 @@ void wm_init(void);
 /* Create a new window. Returns HWND_NULL on failure.
  * x,y,w,h = outer frame. style = WF_* flags ORed together. */
 hwnd_t wm_create_window(int16_t x, int16_t y, int16_t w, int16_t h,
-                         const char *title, uint8_t style,
+                         const char *title, uint16_t style,
                          event_handler_t event_cb,
                          paint_handler_t paint_cb);
 

@@ -45,4 +45,26 @@ static inline const uint8_t *font_get_glyph(char c) {
     return &font_8x8[u * 8];
 }
 
+/* 8x12 fixed-width UI font — Tamzen 6x12 Regular weight.
+ * Full ASCII with lowercase. Used for window chrome, menus, taskbar.
+ * Each glyph is 12 bytes — one byte per row, MSB = leftmost pixel.
+ * Total: 256 * 12 = 3072 bytes, stored in flash (.rodata). */
+#define FONT_UI_WIDTH   6
+#define FONT_UI_HEIGHT  12
+
+extern const uint8_t font_ui_8x12[3072];
+
+static inline const uint8_t *font_ui_get_glyph(uint8_t c) {
+    return &font_ui_8x12[c * 12];
+}
+
+/* 8x12 fixed-width UI font — Tamzen 6x12 Bold weight.
+ * Separate bitmap data (not runtime-emboldened).
+ * Used for window title bars and the Start button. */
+extern const uint8_t font_ui_bold_8x12[3072];
+
+static inline const uint8_t *font_ui_bold_get_glyph(uint8_t c) {
+    return &font_ui_bold_8x12[c * 12];
+}
+
 #endif /* FONT_H */
