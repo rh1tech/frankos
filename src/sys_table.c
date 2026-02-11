@@ -579,6 +579,7 @@ unsigned long __in_systable() __aligned(4096) sys_table_ptrs[] = {
     pvTimerGetTimerID, // 429
     xTaskGenericNotify, // 430
     ulTaskGenericNotifyTake, // 431
+    wm_set_pending_icon, // 432
     // TODO:
     0
 };

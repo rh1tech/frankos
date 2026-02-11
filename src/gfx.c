@@ -234,3 +234,21 @@ void gfx_text_ui_bold_clipped(int x, int y, const char *str,
         str++;
     }
 }
+
+/*==========================================================================
+ * 16x16 icon blitter
+ *=========================================================================*/
+
+void gfx_draw_icon_16(int sx, int sy, const uint8_t *icon_data) {
+    for (int row = 0; row < 16; row++) {
+        int py = sy + row;
+        if (py < 0 || py >= FB_HEIGHT) continue;
+        for (int col = 0; col < 16; col++) {
+            int px = sx + col;
+            if (px < 0 || px >= DISPLAY_WIDTH) continue;
+            uint8_t c = icon_data[row * 16 + col];
+            if (c != 0xFF)
+                display_set_pixel(px, py, c);
+        }
+    }
+}

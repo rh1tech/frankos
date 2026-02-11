@@ -29,6 +29,13 @@ static hwnd_t    z_stack[WM_MAX_WINDOWS];      /* z-order: bottom to top */
 static uint8_t   z_count;                       /* number of entries in z_stack */
 static hwnd_t    focus_hwnd;                    /* currently focused window */
 
+/* Per-window icon storage — copied here so icons survive fos_apps[] rescan */
+#define ICON16_SIZE 256
+static uint8_t   icon_pool[WM_MAX_WINDOWS][ICON16_SIZE];
+
+/* Pending icon — set before wm_create_window(), consumed by it */
+static const uint8_t *pending_icon = NULL;
+
 /*==========================================================================
  * Internal helpers
  *=========================================================================*/
@@ -70,6 +77,15 @@ hwnd_t wm_create_window(int16_t x, int16_t y, int16_t w, int16_t h,
             if (title) {
                 strncpy(win->title, title, sizeof(win->title) - 1);
                 win->title[sizeof(win->title) - 1] = '\0';
+            }
+
+            /* Assign pending icon (if any) */
+            if (pending_icon) {
+                memcpy(icon_pool[i], pending_icon, ICON16_SIZE);
+                win->icon = icon_pool[i];
+                pending_icon = NULL;
+            } else {
+                win->icon = NULL;
             }
 
             hwnd_t hwnd = (hwnd_t)(i + 1);
@@ -272,6 +288,10 @@ void wm_set_title(hwnd_t hwnd, const char *title) {
     windows[hwnd - 1].flags |= WF_DIRTY;
 }
 
+void wm_set_pending_icon(const uint8_t *icon_data) {
+    pending_icon = icon_data;
+}
+
 /*==========================================================================
  * Hit-test: find topmost window at a screen point
  *=========================================================================*/
@@ -436,10 +456,15 @@ static void draw_window_decorations(hwnd_t hwnd, window_t *win) {
     int tb_w = f.w - 2 * THEME_BORDER_WIDTH;
     gfx_fill_rect(tb_x, tb_y, tb_w, THEME_TITLE_HEIGHT, title_bg);
 
+    /* Title bar icon — draw 16x16 icon if available, use default otherwise */
+    extern const uint8_t default_icon_16x16[256];
+    const uint8_t *icon = win->icon ? win->icon : default_icon_16x16;
+    gfx_draw_icon_16(tb_x + 2, tb_y + 2, icon);
+
     /* Title text — bold UI font, vertically centered in title bar */
     int text_y = tb_y + (THEME_TITLE_HEIGHT - FONT_UI_HEIGHT) / 2;
-    int text_x = tb_x + 4;
-    int max_title_w = tb_w - 4;
+    int text_x = tb_x + 20;
+    int max_title_w = tb_w - 20;
     if (win->flags & WF_CLOSABLE) {
         /* Close + maximize + minimize buttons */
         max_title_w -= 3 * (THEME_BUTTON_W + THEME_BUTTON_PAD);

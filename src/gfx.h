@@ -62,4 +62,9 @@ void gfx_text_ui_bold_clipped(int x, int y, const char *str,
                                uint8_t fg, uint8_t bg,
                                int cx, int cy, int cw, int ch);
 
+/* Draw a 16x16 icon from raw palette-index data.
+ * icon_data = 256 bytes (one byte per pixel, row-major).
+ * 0xFF pixels are transparent (skipped). */
+void gfx_draw_icon_16(int sx, int sy, const uint8_t *icon_data);
+
 #endif /* GFX_H */

@@ -56,10 +56,13 @@ static const sm_item_t sm_items[] = {
 #define FOS_MAX_APPS 16
 #define FOS_NAME_LEN 20
 #define FOS_PATH_LEN 32
+#define ICON16_SIZE  256
 
 static struct {
-    char name[FOS_NAME_LEN];  /* display name from .inf */
-    char path[FOS_PATH_LEN];  /* e.g. "/fos/minesweeper" */
+    char    name[FOS_NAME_LEN];  /* display name from .inf */
+    char    path[FOS_PATH_LEN];  /* e.g. "/fos/minesweeper" */
+    uint8_t icon[ICON16_SIZE];   /* 16x16 icon data from .inf */
+    bool    has_icon;             /* true if icon was loaded */
 } fos_apps[FOS_MAX_APPS];
 static int fos_app_count = 0;
 
@@ -84,11 +87,12 @@ static void fos_scan(void) {
         snprintf(fos_apps[fos_app_count].path,
                  FOS_PATH_LEN, "/fos/%s", fno.fname);
 
-        /* Try to read display name from companion .inf file */
+        /* Try to read display name and icon from companion .inf file */
         char inf_path[FOS_PATH_LEN + 4];
         snprintf(inf_path, sizeof(inf_path), "/fos/%s.inf", fno.fname);
         FIL f;
         bool got_name = false;
+        fos_apps[fos_app_count].has_icon = false;
         if (f_open(&f, inf_path, FA_READ) == FR_OK) {
             UINT br;
             char buf[FOS_NAME_LEN];
@@ -103,6 +107,23 @@ static void fos_scan(void) {
                     strncpy(fos_apps[fos_app_count].name, buf, FOS_NAME_LEN - 1);
                     fos_apps[fos_app_count].name[FOS_NAME_LEN - 1] = '\0';
                     got_name = true;
+                }
+            }
+            /* Try to read 256-byte icon after the name line.
+             * The .inf format is: <name>\n<256 raw bytes> */
+            {
+                /* Find the end of the name line in the file */
+                f_lseek(&f, 0);
+                char ch;
+                FSIZE_t pos = 0;
+                while (f_read(&f, &ch, 1, &br) == FR_OK && br == 1) {
+                    pos++;
+                    if (ch == '\n') break;
+                }
+                /* Read icon data at current position */
+                if (f_read(&f, fos_apps[fos_app_count].icon,
+                           ICON16_SIZE, &br) == FR_OK && br == ICON16_SIZE) {
+                    fos_apps[fos_app_count].has_icon = true;
                 }
             }
             f_close(&f);
@@ -150,7 +171,7 @@ static void compute_menu_rect(void) {
 }
 
 static void compute_sub_rect(void) {
-    sub_w = 120;
+    sub_w = 148;
     sub_h = 4 + (fos_app_count + 1) * SM_ITEM_HEIGHT;
     sub_x = sm_x + sm_w;
     /* Align with the Programs item */
@@ -196,10 +217,14 @@ extern void spawn_terminal_window(void);
 
 static void execute_sub_item(int index) {
     startmenu_close();
+    extern const uint8_t default_icon_16x16[256];
     if (index < fos_app_count) {
+        wm_set_pending_icon(fos_apps[index].has_icon
+                            ? fos_apps[index].icon : default_icon_16x16);
         launch_elf_app(fos_apps[index].path);
     } else {
         /* Last item is always Terminal */
+        wm_set_pending_icon(default_icon_16x16);
         spawn_terminal_window();
     }
 }
@@ -279,15 +304,23 @@ void startmenu_draw(void) {
         gfx_hline(sub_x, sub_y + sub_h - 1, sub_w, COLOR_DARK_GRAY);
         gfx_vline(sub_x + sub_w - 1, sub_y, sub_h, COLOR_DARK_GRAY);
 
+        extern const uint8_t default_icon_16x16[256];
         int sy = sub_y + 2;
         for (int i = 0; i < sub_count; i++) {
             bool hovered = (i == sub_hover);
             uint8_t bg = hovered ? COLOR_BLUE : THEME_BUTTON_FACE;
             uint8_t fg = hovered ? COLOR_WHITE : COLOR_BLACK;
             gfx_fill_rect(sub_x + 2, sy, sub_w - 4, SM_ITEM_HEIGHT, bg);
+
+            /* Draw 16x16 icon */
+            const uint8_t *icon = default_icon_16x16;
+            if (i < fos_app_count && fos_apps[i].has_icon)
+                icon = fos_apps[i].icon;
+            gfx_draw_icon_16(sub_x + 4, sy + 4, icon);
+
             const char *label = (i < fos_app_count)
                                 ? fos_apps[i].name : "Terminal";
-            gfx_text_ui(sub_x + 6, sy + (SM_ITEM_HEIGHT - FONT_UI_HEIGHT) / 2,
+            gfx_text_ui(sub_x + 24, sy + (SM_ITEM_HEIGHT - FONT_UI_HEIGHT) / 2,
                         label, fg, bg);
             sy += SM_ITEM_HEIGHT;
         }

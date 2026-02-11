@@ -16,6 +16,8 @@
 #include "display.h"
 #include <string.h>
 
+extern const uint8_t default_icon_16x16[256];
+
 /*==========================================================================
  * Constants
  *=========================================================================*/
@@ -123,11 +125,15 @@ void taskbar_draw(void) {
             draw_raised_button(btn_x, BUTTON_Y, btn_w, BUTTON_HEIGHT);
         }
 
-        /* Truncated title text */
-        int text_x = btn_x + 4 + (is_focused ? 1 : 0);
-        int text_y = BUTTON_Y + (BUTTON_HEIGHT - FONT_UI_HEIGHT) / 2 +
-                     (is_focused ? 1 : 0);
-        int text_max_w = btn_w - 8;
+        /* Draw 16x16 icon in button */
+        int offset = is_focused ? 1 : 0;
+        const uint8_t *icon = win->icon ? win->icon : default_icon_16x16;
+        gfx_draw_icon_16(btn_x + 4 + offset, BUTTON_Y + 3 + offset, icon);
+
+        /* Truncated title text (shifted right for icon) */
+        int text_x = btn_x + 22 + offset;
+        int text_y = BUTTON_Y + (BUTTON_HEIGHT - FONT_UI_HEIGHT) / 2 + offset;
+        int text_max_w = btn_w - 26;
         if (text_max_w > 0) {
             gfx_text_ui_clipped(text_x, text_y, win->title,
                                 COLOR_BLACK, THEME_BUTTON_FACE,

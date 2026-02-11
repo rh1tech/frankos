@@ -153,6 +153,8 @@ static void compositor_task(void *params) {
  * Spawn a new terminal window with its own shell task
  *=========================================================================*/
 void spawn_terminal_window(void) {
+    extern const uint8_t default_icon_16x16[256];
+    wm_set_pending_icon(default_icon_16x16);
     hwnd_t hwnd = terminal_create();
     if (hwnd == HWND_NULL) {
         printf("spawn_terminal_window: out of memory\n");

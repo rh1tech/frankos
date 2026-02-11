@@ -5,6 +5,7 @@ include(pico_sdk_import.cmake)
 
 project(minesweeper C CXX ASM)
 pico_sdk_init()
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
 set(CMAKE_C_STANDARD 11)
 
@@ -46,7 +47,20 @@ target_compile_definitions(${PROJECT_NAME} PRIVATE
 pico_enable_stdio_uart(${PROJECT_NAME} 0)
 pico_enable_stdio_usb(${PROJECT_NAME} 0)
 
-file(WRITE "${CMAKE_BINARY_DIR}/minesweeper.inf" "Minesweeper")
+set(ICON_ICO "${CMAKE_CURRENT_SOURCE_DIR}/../../../assets/icons/w95_minesweeper.ico")
+set(CONVERT_ICO_16 "${CMAKE_CURRENT_SOURCE_DIR}/../../../tools/convert_ico_16.py")
+
+add_custom_command(
+    OUTPUT "${CMAKE_BINARY_DIR}/minesweeper.inf"
+    COMMAND ${Python3_EXECUTABLE} "${CONVERT_ICO_16}"
+        --inf "Minesweeper" "${ICON_ICO}"
+        "${CMAKE_BINARY_DIR}/minesweeper.inf"
+    DEPENDS "${CONVERT_ICO_16}" "${ICON_ICO}"
+    COMMENT "Generating minesweeper.inf with embedded icon"
+)
+add_custom_target(minesweeper_inf ALL
+    DEPENDS "${CMAKE_BINARY_DIR}/minesweeper.inf"
+)
 
 add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy

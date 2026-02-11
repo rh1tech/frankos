@@ -64,6 +64,7 @@ add_executable(frankos
     src/sysmenu.c
     src/dialog.c
     src/dialog_icons.c
+    src/default_icon.c
 
     # MOS2 core (copied from murmulator-os2)
     src/app.c
