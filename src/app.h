@@ -40,6 +40,9 @@ void app_signal(void);
 int kill(uint32_t task_number);
 void __exit(int status);
 
+/* Launch a standalone ELF app from an SD card path (detached) */
+void launch_elf_app(const char *path);
+
 typedef struct driver_api_s {
     const char* dev_node_name;
     uint32_t driver_version;

@@ -17,6 +17,12 @@
 #include "task.h"
 #include "sys_table.h"
 #include "graphics.h"
+#include "window.h"
+#include "window_event.h"
+#include "window_draw.h"
+#include "menu.h"
+#include "dialog.h"
+#include "taskbar.h"
 #include "ff.h"
 #include "hooks.h"
 #include "portable.h"
@@ -544,6 +550,35 @@ unsigned long __in_systable() __aligned(4096) sys_table_ptrs[] = {
     __raise, // 401
     __sigprocmask, // 402
     __getcwd, // 403
+    // FRANK OS GUI API
+    wm_create_window, // 404
+    wm_destroy_window, // 405
+    wm_show_window, // 406
+    wm_set_focus, // 407
+    wm_get_window, // 408
+    wm_set_window_rect, // 409
+    wm_invalidate, // 410
+    wm_post_event, // 411
+    wm_get_client_rect, // 412
+    wd_begin, // 413
+    wd_end, // 414
+    wd_pixel, // 415
+    wd_hline, // 416
+    wd_vline, // 417
+    wd_fill_rect, // 418
+    wd_clear, // 419
+    wd_rect, // 420
+    wd_bevel_rect, // 421
+    wd_char_ui, // 422
+    wd_text_ui, // 423
+    menu_set, // 424
+    dialog_show, // 425
+    taskbar_invalidate, // 426
+    xTimerCreate, // 427
+    xTimerGenericCommandFromTask, // 428
+    pvTimerGetTimerID, // 429
+    xTaskGenericNotify, // 430
+    ulTaskGenericNotifyTake, // 431
     // TODO:
     0
 };
