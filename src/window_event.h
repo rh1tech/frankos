@@ -270,4 +270,17 @@ uint8_t wm_get_modifiers(void);
 void wm_mark_dirty(void);
 bool wm_needs_composite(void);
 
+/*==========================================================================
+ * Modal dialog support
+ *=========================================================================*/
+
+/* Set the modal window — blocks input to all other windows */
+void wm_set_modal(hwnd_t hwnd);
+
+/* Clear the modal window */
+void wm_clear_modal(void);
+
+/* Get the current modal window (HWND_NULL if none) */
+hwnd_t wm_get_modal(void);
+
 #endif /* WINDOW_EVENT_H */

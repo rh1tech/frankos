@@ -131,3 +131,106 @@ void gfx_text_clipped(int x, int y, const char *str, uint8_t fg, uint8_t bg,
         str++;
     }
 }
+
+/*==========================================================================
+ * UI font (8x12) — regular weight
+ *
+ * The UI font uses MSB=leftmost bit ordering (natural for authoring),
+ * while display_blit_glyph_8wide expects LSB=leftmost.  Since the UI
+ * font only renders small amounts of chrome text (not a 70x20 grid),
+ * we always use per-pixel rendering — the cost is negligible.
+ *=========================================================================*/
+
+void gfx_char_ui(int x, int y, char c, uint8_t fg, uint8_t bg) {
+    const uint8_t *glyph = font_ui_get_glyph((uint8_t)c);
+    for (int row = 0; row < FONT_UI_HEIGHT; row++) {
+        uint8_t bits = glyph[row];
+        for (int col = 0; col < FONT_UI_WIDTH; col++) {
+            display_set_pixel(x + col, y + row,
+                              (bits & (0x80 >> col)) ? fg : bg);
+        }
+    }
+}
+
+void gfx_text_ui(int x, int y, const char *str, uint8_t fg, uint8_t bg) {
+    while (*str) {
+        gfx_char_ui(x, y, *str, fg, bg);
+        x += FONT_UI_WIDTH;
+        str++;
+    }
+}
+
+void gfx_text_ui_clipped(int x, int y, const char *str, uint8_t fg, uint8_t bg,
+                          int cx, int cy, int cw, int ch) {
+    int cx1 = cx + cw;
+    int cy1 = cy + ch;
+    while (*str) {
+        if (x + FONT_UI_WIDTH > cx && x < cx1) {
+            const uint8_t *glyph = font_ui_get_glyph((uint8_t)*str);
+            for (int row = 0; row < FONT_UI_HEIGHT; row++) {
+                int py = y + row;
+                if (py < cy || py >= cy1) continue;
+                uint8_t bits = glyph[row];
+                for (int col = 0; col < FONT_UI_WIDTH; col++) {
+                    int px = x + col;
+                    if (px < cx || px >= cx1) continue;
+                    display_set_pixel(px, py,
+                                      (bits & (0x80 >> col)) ? fg : bg);
+                }
+            }
+        }
+        x += FONT_UI_WIDTH;
+        str++;
+    }
+}
+
+/*==========================================================================
+ * UI font (8x12) — bold weight (separate font data)
+ *
+ * Uses the dedicated bold font array (font_ui_bold_8x12) rendered from
+ * the W95font Bold variant, giving proper typographic bold weight.
+ *=========================================================================*/
+
+void gfx_char_ui_bold(int x, int y, char c, uint8_t fg, uint8_t bg) {
+    const uint8_t *glyph = font_ui_bold_get_glyph((uint8_t)c);
+    for (int row = 0; row < FONT_UI_HEIGHT; row++) {
+        uint8_t bits = glyph[row];
+        for (int col = 0; col < FONT_UI_WIDTH; col++) {
+            display_set_pixel(x + col, y + row,
+                              (bits & (0x80 >> col)) ? fg : bg);
+        }
+    }
+}
+
+void gfx_text_ui_bold(int x, int y, const char *str, uint8_t fg, uint8_t bg) {
+    while (*str) {
+        gfx_char_ui_bold(x, y, *str, fg, bg);
+        x += FONT_UI_WIDTH;
+        str++;
+    }
+}
+
+void gfx_text_ui_bold_clipped(int x, int y, const char *str,
+                               uint8_t fg, uint8_t bg,
+                               int cx, int cy, int cw, int ch) {
+    int cx1 = cx + cw;
+    int cy1 = cy + ch;
+    while (*str) {
+        if (x + FONT_UI_WIDTH > cx && x < cx1) {
+            const uint8_t *glyph = font_ui_bold_get_glyph((uint8_t)*str);
+            for (int row = 0; row < FONT_UI_HEIGHT; row++) {
+                int py = y + row;
+                if (py < cy || py >= cy1) continue;
+                uint8_t bits = glyph[row];
+                for (int col = 0; col < FONT_UI_WIDTH; col++) {
+                    int px = x + col;
+                    if (px < cx || px >= cx1) continue;
+                    display_set_pixel(px, py,
+                                      (bits & (0x80 >> col)) ? fg : bg);
+                }
+            }
+        }
+        x += FONT_UI_WIDTH;
+        str++;
+    }
+}

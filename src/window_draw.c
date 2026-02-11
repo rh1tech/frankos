@@ -31,8 +31,8 @@ void wd_begin(hwnd_t hwnd) {
     if (!win) return;
 
     if (win->flags & WF_BORDER) {
-        point_t origin = theme_client_origin(&win->frame);
-        rect_t client = theme_client_rect(&win->frame);
+        point_t origin = theme_client_origin(&win->frame, win->flags);
+        rect_t client = theme_client_rect(&win->frame, win->flags);
         draw_ctx.ox = origin.x;
         draw_ctx.oy = origin.y;
         draw_ctx.cw = client.w;

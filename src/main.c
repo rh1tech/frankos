@@ -26,6 +26,10 @@
 #include "sdcard_init.h"
 #include "terminal.h"
 #include "shell.h"
+#include "menu.h"
+#include "taskbar.h"
+#include "startmenu.h"
+#include "sysmenu.h"
 #include "disphstx.h"
 #include "psram.h"
 #ifdef PSRAM_MAX_FREQ_MHZ
@@ -148,7 +152,7 @@ static void compositor_task(void *params) {
 /*==========================================================================
  * Spawn a new terminal window with its own shell task
  *=========================================================================*/
-static void spawn_terminal_window(void) {
+void spawn_terminal_window(void) {
     hwnd_t hwnd = terminal_create();
     if (hwnd == HWND_NULL) {
         printf("spawn_terminal_window: out of memory\n");
@@ -158,6 +162,7 @@ static void spawn_terminal_window(void) {
     if (!t) return;
     shell_start(t);
     wm_set_focus(hwnd);
+    taskbar_invalidate();
 }
 
 static void input_task(void *params) {
@@ -184,12 +189,75 @@ static void input_task(void *params) {
                 continue;
             }
 
+            /* Win key (alone): toggle start menu
+             * HID GUI key codes: LGUI=0xE3, RGUI=0xE7 */
+            if (kev.pressed &&
+                (kev.hid_code == 0xE3 || kev.hid_code == 0xE7) &&
+                !(kev.modifiers & ~(KBD_MOD_LGUI | KBD_MOD_RGUI))) {
+                startmenu_toggle();
+                g_video_dirty = true;
+                continue;
+            }
+
+            /* Route keyboard to open menus/overlays first */
+            if (kev.pressed) {
+                if (startmenu_is_open() &&
+                    startmenu_handle_key(kev.hid_code, kev.modifiers)) {
+                    g_video_dirty = true;
+                    continue;
+                }
+                if (sysmenu_is_open() &&
+                    sysmenu_handle_key(kev.hid_code, kev.modifiers)) {
+                    g_video_dirty = true;
+                    continue;
+                }
+                if (menu_is_open() &&
+                    menu_handle_key(kev.hid_code, kev.modifiers)) {
+                    g_video_dirty = true;
+                    continue;
+                }
+            }
+
             /* Intercept Alt+Tab: cycle focus between windows */
             if (kev.pressed && (kev.modifiers & KBD_MOD_ALT) &&
                 kev.hid_code == 0x2B /* HID_KEY_TAB */) {
                 wm_cycle_focus();
                 g_video_dirty = true;
                 continue;
+            }
+
+            /* Alt+Space: open system menu for focused window */
+            if (kev.pressed && (kev.modifiers & KBD_MOD_ALT) &&
+                kev.hid_code == 0x2C /* HID_KEY_SPACE */) {
+                hwnd_t focus = wm_get_focus();
+                if (focus != HWND_NULL) {
+                    sysmenu_open(focus);
+                    g_video_dirty = true;
+                }
+                continue;
+            }
+
+            /* Alt+F4: close focused window */
+            if (kev.pressed && (kev.modifiers & KBD_MOD_ALT) &&
+                kev.hid_code == 0x3D /* HID_KEY_F4 */) {
+                hwnd_t focus = wm_get_focus();
+                if (focus != HWND_NULL) {
+                    window_event_t we = {0};
+                    we.type = WM_CLOSE;
+                    wm_post_event(focus, &we);
+                    g_video_dirty = true;
+                }
+                continue;
+            }
+
+            /* Alt+letter: open menu bar for focused window */
+            if (kev.pressed && (kev.modifiers & KBD_MOD_ALT) &&
+                kev.hid_code >= 0x04 && kev.hid_code <= 0x1D) {
+                hwnd_t focus = wm_get_focus();
+                if (focus != HWND_NULL && menu_try_alt_key(focus, kev.hid_code)) {
+                    g_video_dirty = true;
+                    continue;
+                }
             }
 
             window_event_t we = {0};
@@ -343,16 +411,11 @@ int main(void) {
     DispHstxCore1Exec(multicore_lockout_victim_init);
     DispHstxCore1Wait();
 
-    /* Create terminal window */
-    hwnd_t term_win = terminal_create();
-    wm_set_focus(term_win);
-    printf("Terminal created (hwnd=%d)\n", term_win); stdio_flush();
+    /* Initialize taskbar — clean desktop on boot, no auto-terminal */
+    taskbar_init();
+    printf("Taskbar initialized\n"); stdio_flush();
 
-    /* Start shell on the terminal (runs as a FreeRTOS task) */
-    terminal_t *term = terminal_from_hwnd(term_win);
-    shell_start(term);
-
-    /* One-shot composite so the first frame is visible */
+    /* One-shot composite so the first frame (desktop + taskbar) is visible */
     wm_composite();
 
     xTaskCreate(usb_service_task, "usb", 256, NULL, configMAX_PRIORITIES - 1, NULL);

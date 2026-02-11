@@ -12,11 +12,12 @@
 #include "window.h"
 
 /*==========================================================================
- * Decoration metrics (pixels)
+ * Decoration metrics (pixels) — Win95 style
  *=========================================================================*/
 
-#define THEME_TITLE_HEIGHT   18    /* title bar height */
-#define THEME_BORDER_WIDTH    2    /* border thickness */
+#define THEME_TITLE_HEIGHT   20    /* title bar height */
+#define THEME_BORDER_WIDTH    4    /* border thickness (Win95 double bevel) */
+#define THEME_MENU_HEIGHT    20    /* menu bar height */
 #define THEME_BUTTON_W       16    /* title-bar button width */
 #define THEME_BUTTON_H       14    /* title-bar button height */
 #define THEME_BUTTON_PAD      2    /* padding between buttons */
@@ -70,29 +71,32 @@
 #define HT_BORDER_TR 11
 #define HT_BORDER_BL 12
 #define HT_BORDER_BR 13
+#define HT_MENUBAR   14
 
 /*==========================================================================
  * Inline geometry helpers
  *=========================================================================*/
 
 /* Compute the client-area rect in client coordinates (origin 0,0)
- * given the outer frame rect. */
-static inline rect_t theme_client_rect(const rect_t *frame) {
+ * given the outer frame rect and window flags. */
+static inline rect_t theme_client_rect(const rect_t *frame, uint16_t flags) {
     rect_t r;
     r.x = 0;
     r.y = 0;
     r.w = frame->w - 2 * THEME_BORDER_WIDTH;
     r.h = frame->h - THEME_TITLE_HEIGHT - 2 * THEME_BORDER_WIDTH;
+    if (flags & WF_MENUBAR) r.h -= THEME_MENU_HEIGHT;
     if (r.w < 0) r.w = 0;
     if (r.h < 0) r.h = 0;
     return r;
 }
 
 /* Client area origin in screen coordinates */
-static inline point_t theme_client_origin(const rect_t *frame) {
+static inline point_t theme_client_origin(const rect_t *frame, uint16_t flags) {
     point_t p;
     p.x = frame->x + THEME_BORDER_WIDTH;
     p.y = frame->y + THEME_BORDER_WIDTH + THEME_TITLE_HEIGHT;
+    if (flags & WF_MENUBAR) p.y += THEME_MENU_HEIGHT;
     return p;
 }
 
@@ -131,7 +135,7 @@ static inline rect_t theme_min_btn_rect(const rect_t *frame) {
 
 /* Hit-test: given a screen-coordinate point and a window's outer frame,
  * return which zone the point falls in. */
-static inline uint8_t theme_hit_test(const rect_t *frame, uint8_t flags,
+static inline uint8_t theme_hit_test(const rect_t *frame, uint16_t flags,
                                       int16_t px, int16_t py) {
     /* Outside the frame entirely? */
     if (px < frame->x || px >= frame->x + frame->w ||
@@ -176,7 +180,7 @@ static inline uint8_t theme_hit_test(const rect_t *frame, uint8_t flags,
             }
         }
 
-        if (flags & WF_RESIZABLE) {
+        if (flags & WF_CLOSABLE) {
             rect_t mb = theme_max_btn_rect(frame);
             if (px >= mb.x && px < mb.x + mb.w &&
                 py >= mb.y && py < mb.y + mb.h) {
@@ -193,12 +197,26 @@ static inline uint8_t theme_hit_test(const rect_t *frame, uint8_t flags,
         return HT_TITLEBAR;
     }
 
+    /* Menu bar zone (between title bar and client) */
+    if (flags & WF_MENUBAR) {
+        int16_t menu_top = THEME_BORDER_WIDTH + THEME_TITLE_HEIGHT;
+        if (ly >= menu_top && ly < menu_top + THEME_MENU_HEIGHT &&
+            lx >= THEME_BORDER_WIDTH &&
+            lx < frame->w - THEME_BORDER_WIDTH) {
+            return HT_MENUBAR;
+        }
+    }
+
     /* Client area */
-    if (lx >= THEME_BORDER_WIDTH &&
-        lx < frame->w - THEME_BORDER_WIDTH &&
-        ly >= THEME_BORDER_WIDTH + THEME_TITLE_HEIGHT &&
-        ly < frame->h - THEME_BORDER_WIDTH) {
-        return HT_CLIENT;
+    {
+        int16_t client_top = THEME_BORDER_WIDTH + THEME_TITLE_HEIGHT;
+        if (flags & WF_MENUBAR) client_top += THEME_MENU_HEIGHT;
+        if (lx >= THEME_BORDER_WIDTH &&
+            lx < frame->w - THEME_BORDER_WIDTH &&
+            ly >= client_top &&
+            ly < frame->h - THEME_BORDER_WIDTH) {
+            return HT_CLIENT;
+        }
     }
 
     /* Edge border zones */
