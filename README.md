@@ -25,7 +25,7 @@ A FreeRTOS-based operating system for the RP2350 microcontroller, featuring a wi
 
 ## Supported Board
 
-FRANK OS targets the **FRANK M2** board — an RP2350B-based development board with DVI output, PS/2 ports, SD card slot, and PSRAM.
+FRANK OS targets the [**FRANK M2**](https://github.com/rh1tech/frank) board — an RP2350B-based development board with DVI output, PS/2 ports, SD card slot, and PSRAM.
 
 - **MCU:** RP2350B (QFN-80, 48 GPIO)
 - **Flash:** 4 MB
@@ -193,8 +193,7 @@ Third-party components retain their original licenses (MIT, BSD-3-Clause, ISC, A
 
 ## Author
 
-**Mikhail Matveev** <<xtreme@rh1.tech>>
-- Website: [https://rh1.tech](https://rh1.tech)
+**Mikhail Matveev** <<xtreme@rh1.tech>>, [https://rh1.tech](https://rh1.tech)
 
 ## Acknowledgments
 
