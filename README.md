@@ -165,7 +165,7 @@ Compiled apps are placed in `apps/compiled/` and can be copied to the SD card fo
 ## SD Card Setup
 
 1. Format an SD card as FAT32
-2. Copy ELF applications to the card
+2. Copy the contents of the `sdcard/` directory to the root of the SD card
 3. Insert the card — it is auto-mounted at boot
 4. Use the shell or file manager to browse and launch applications
 
