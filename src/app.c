@@ -267,12 +267,12 @@ void __in_hfa() resolve_thm_pc22(uint16_t* addr, uint16_t* addr_ref, uint32_t sy
 }
 
 // Разрешение ссылки типа R_ARM_THM_JUMP24 (B.W в Thumb-2)
+// Mirrors resolve_thm_pc22 (BL) logic, but emits B.W encoding instead of BL.
 static void __in_hfa() resolve_thm_jump24(uint16_t* addr, uint16_t* addr_ref, uint32_t sym_val) {
-    // Считываем два halfword'а инструкции B.W
     uint16_t instr0 = addr[0];
     uint16_t instr1 = addr[1];
 
-    // Декодирование текущего смещения
+    // Декодирование текущего смещения (same as BL)
     uint32_t S     = (instr0 >> 10) & 1;
     uint32_t J1    = (instr1 >> 13) & 1;
     uint32_t J2    = (instr1 >> 11) & 1;
@@ -282,48 +282,26 @@ static void __in_hfa() resolve_thm_jump24(uint16_t* addr, uint16_t* addr_ref, ui
     uint32_t I1 = (~(J1 ^ S)) & 1;
     uint32_t I2 = (~(J2 ^ S)) & 1;
 
-    int32_t offset = (int32_t)((S  << 24) |
-                               (I1 << 23) |
-                               (I2 << 22) |
-                               (imm10 << 12) |
-                               (imm11 << 1));
-    // знаковое расширение 25-битного значения
+    uint32_t offset = (I1 << 23) | (I2 << 22) | (imm10 << 12) | (imm11 << 1);
     if (S) {
-        offset |= 0xFF000000;
+        offset |= 0xFF800000;
     }
 
-    // P — адрес инструкции в момент исполнения: addr_ref + 4 (Thumb)
-    uint32_t P       = (uint32_t)addr_ref + 4;
+    // Вычисление нового смещения (same formula as resolve_thm_pc22)
+    uint32_t new_offset = (uint32_t)((int32_t)offset + (int32_t)sym_val - (int32_t)addr_ref);
 
-    // Целевой адрес: sym_val (база секции + st_value), выравниваем по 2 байта
-    uint32_t target  = sym_val & ~1u;
-
-    // Новый относительный оффсет: A(old) + (target - P)
-    int32_t rel = offset + (int32_t)target - (int32_t)P;
-
-    // Диапазон B.W: ±16 МБ, шаг 2 байта
-    if (rel < -(1 << 24) || rel > ((1 << 24) - 2)) {
-        goutf("R_ARM_THM_JUMP24: target out of range, rel = %d\n", rel);
-        return; // не трогаем инструкцию, чтобы не писать мусор
-    }
-
-    uint32_t urel = (uint32_t)rel;
-
-    // Обратно кодируем rel в S, I1, I2, imm10, imm11
-    S     = (urel >> 24) & 1;
-    I1    = (urel >> 23) & 1;
-    I2    = (urel >> 22) & 1;
-    imm10 = (urel >> 12) & 0x03FF;
-    imm11 = (urel >> 1)  & 0x07FF;
+    S     = new_offset >> 31;
+    I1    = (new_offset >> 23) & 1;
+    I2    = (new_offset >> 22) & 1;
+    imm10 = (new_offset >> 12) & 0x03FF;
+    imm11 = (new_offset >> 1)  & 0x07FF;
 
     J1 = (~(I1 ^ S)) & 1;
     J2 = (~(I2 ^ S)) & 1;
 
-    // Формируем обратно пару halfword'ов B.W:
-    // верхний:  11110 S imm10
-    // нижний:   11100 J1 0 J2 imm11
+    // B.W encoding: upper = 11110 S imm10, lower = 10 J1 1 J2 imm11
     addr[0] = (uint16_t)(0xF000 | (S << 10) | imm10);
-    addr[1] = (uint16_t)((0b11100 << 11) | (J1 << 13) | (J2 << 11) | imm11);
+    addr[1] = (uint16_t)(0x9000 | (J1 << 13) | (J2 << 11) | imm11);
 }
 
 // вставить где-то рядом с resolve_thm_pc22/resolve_thm_jump24
@@ -428,8 +406,18 @@ static void __in_hfa() add_sec(load_sec_ctx* ctx, char* del_addr, char* prg_addr
     list_push_back(ctx->sections_lst, se);
 }
 
-static uint8_t* alloc_zeroed(size_t sz) {
+/* When true, alloc_zeroed() places *executable* sections in SRAM so that
+ * code runs directly without XIP cache thrashing.  Data sections always go
+ * to PSRAM.  Only code↔code references use BL/B.W (±16 MB); code→data
+ * references use R_ARM_ABS32 with no range limit, so mixed placement is safe. */
+static bool g_sram_for_code = false;
+
+static uint8_t* alloc_zeroed(size_t sz, bool executable) {
     uint8_t* p = NULL;
+    if (executable && g_sram_for_code) {
+        p = (uint8_t*)pvPortCalloc(1, sz);
+        if (p) return p;
+    }
     if (psram_is_available()) {
         p = (uint8_t*)psram_alloc(sz);
         if (p) memset(p, 0, sz);
@@ -439,14 +427,14 @@ static uint8_t* alloc_zeroed(size_t sz) {
     return p;
 }
 
-inline static uint8_t* __in_hfa() sec_align(uint32_t sz, uint8_t* *pdel_addr, uint8_t* *real_addr, uint32_t a, bool write_access) {
-    uint8_t* res = alloc_zeroed(sz);
+inline static uint8_t* __in_hfa() sec_align(uint32_t sz, uint8_t* *pdel_addr, uint8_t* *real_addr, uint32_t a, bool write_access, bool executable) {
+    uint8_t* res = alloc_zeroed(sz, executable);
     if (a == 0 || a == 1) {
         *pdel_addr = res;
     }
     else if ((uint32_t)res & (a - 1)) {
         psram_free(res);
-        res = alloc_zeroed(sz + (a - 1));
+        res = alloc_zeroed(sz + (a - 1), executable);
         *pdel_addr = res;
         if ((uint32_t)res & (a - 1)) {
             res = (uint8_t*)(((uint32_t)res & (0xFFFFFFFF ^ (a - 1))) + a);
@@ -622,7 +610,10 @@ static uint8_t* __in_hfa() load_sec2mem(load_sec_ctx * c, uint16_t sec_num, bool
             goto e1;
         }
         bool write_access = try_to_use_flash ? (psh->sh_flags & 1) : true; // required to provide write access
-        prg_addr = sec_align(psh->sh_size, &del_addr, &real_ram_addr, psh->sh_addralign, write_access);
+        bool executable = (psh->sh_flags & SHF_EXECINSTR) != 0;
+        prg_addr = sec_align(psh->sh_size, &del_addr, &real_ram_addr, psh->sh_addralign, write_access, executable);
+        printf("[sec2mem] sec#%d %s -> %p (%u bytes)\n", sec_num,
+               executable ? "CODE" : "DATA", real_ram_addr, (unsigned)psh->sh_size);
         new_flash_addr = flash_addr;
         bool alloc_enough = psh->sh_flags & SHF_ALLOC; // file may not contain such section, just allocation is enough
         if (psh->sh_type == SHT_NOBITS) {
@@ -990,6 +981,25 @@ a6:
     printf("[load_app] syms: req=%d init=%d main=%d fini=%d sig=%d heap=%u\n",
           (int)req_idx, (int)_init_idx, (int)main_idx, (int)_fini_idx, (int)sig_idx,
           (unsigned)xPortGetFreeHeapSize());
+    /* Pre-scan: sum executable section sizes.  If they fit in the SRAM
+     * heap (with margin), place code sections in SRAM so z80_tick etc.
+     * run without XIP cache thrashing.  Data sections always go to PSRAM.
+     * BL/B.W (±16 MB) only link code↔code; code→data uses R_ARM_ABS32. */
+    {
+        size_t code_alloc = 0;
+        f_lseek(f, pehdr->sh_offset);
+        for (uint32_t i = 0; i < pehdr->sh_num; i++) {
+            if (f_read(f, psh, sizeof(elf32_shdr), &rb) == FR_OK && rb == sizeof(elf32_shdr)) {
+                if ((psh->sh_flags & SHF_ALLOC) && (psh->sh_flags & SHF_EXECINSTR))
+                    code_alloc += psh->sh_size + psh->sh_addralign;
+            }
+        }
+        size_t free_heap = xPortGetFreeHeapSize();
+        g_sram_for_code = (code_alloc + (32 << 10) <= free_heap);
+        printf("[load_app] code_alloc=%u heap=%u sram_code=%d\n",
+               (unsigned)code_alloc, (unsigned)free_heap, g_sram_for_code);
+    }
+
     printf("[load_app] load req_ver...\n");
     bootb_ctx->req_ver_fn = load_sec2mem_wrapper(pctx, req_idx, try_to_use_flash);
     printf("[load_app] load _init... heap=%u\n", (unsigned)xPortGetFreeHeapSize());
@@ -1000,6 +1010,7 @@ a6:
     bootb_ctx->_fini_fn   = load_sec2mem_wrapper(pctx, _fini_idx, try_to_use_flash);
     printf("[load_app] load sig... heap=%u\n", (unsigned)xPortGetFreeHeapSize());
     bootb_ctx->sig_fn     = load_sec2mem_wrapper(pctx, sig_idx, try_to_use_flash);
+    g_sram_for_code = false;   /* reset for next app load */
     printf("[load_app] all loaded! heap=%u\n", (unsigned)xPortGetFreeHeapSize());
     if(try_to_use_flash) {
         node_t* n = lst->first;
@@ -1189,7 +1200,7 @@ void task_mem_defer_free(void* ptr) {
 }
 
 
-/* ---- Static task creation with PSRAM stack ---- */
+/* ---- Static task creation: SRAM stack preferred for performance ---- */
 typedef struct {
     StackType_t stack[2048];   /* 8KB on ARM (StackType_t = uint32_t) */
     StaticTask_t tcb;
@@ -1199,14 +1210,20 @@ static TaskHandle_t create_app_task_psram(
     TaskFunction_t fn, const char* name, void* param,
     UBaseType_t priority, app_task_mem_t** out_mem)
 {
-    app_task_mem_t* mem = (app_task_mem_t*)psram_alloc(sizeof(app_task_mem_t));
+    /* Try SRAM first — stack accesses are the hottest path in any app.
+     * PSRAM stacks go through QSPI (~80 cycles/access vs 1 for SRAM). */
+    app_task_mem_t* mem = (app_task_mem_t*)pvPortCalloc(1, sizeof(app_task_mem_t));
+    if (!mem && psram_is_available()) {
+        /* SRAM full — fall back to PSRAM */
+        mem = (app_task_mem_t*)psram_alloc(sizeof(app_task_mem_t));
+        if (mem) memset(mem, 0, sizeof(app_task_mem_t));
+    }
     if (mem) {
-        memset(mem, 0, sizeof(app_task_mem_t));
         *out_mem = mem;
         return xTaskCreateStatic(fn, name, 2048, param, priority,
                                  mem->stack, &mem->tcb);
     }
-    /* PSRAM full — fall back to dynamic SRAM allocation */
+    /* Both full — fall back to dynamic SRAM allocation */
     *out_mem = NULL;
     TaskHandle_t h;
     xTaskCreate(fn, name, 2048, param, priority, &h);

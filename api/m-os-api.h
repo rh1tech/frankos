@@ -84,6 +84,7 @@ inline static int vsnprintf(char *__restrict buff, size_t lim, const char *__res
 typedef void (*goutf_ptr_t)(const char *__restrict str, ...) _ATTRIBUTE ((__format__ (__printf__, 1, 2)));
 #define goutf(...) ((goutf_ptr_t)_sys_table_ptrs[41])(__VA_ARGS__)
 #define printf(...) ((goutf_ptr_t)_sys_table_ptrs[41])(__VA_ARGS__)
+#define serial_printf(...) ((goutf_ptr_t)_sys_table_ptrs[438])(__VA_ARGS__)
 
 /* typedef va_list only when required */
 #if __POSIX_VISIBLE >= 200809 || __XSI_VISIBLE

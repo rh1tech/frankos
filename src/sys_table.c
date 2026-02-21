@@ -586,6 +586,7 @@ unsigned long __in_systable() __aligned(4096) sys_table_ptrs[] = {
     menu_popup_show, // 435
     dialog_input_show, // 436
     dialog_input_get_text, // 437
+    printf, // 438 — USB serial debug output (Pico SDK stdio)
     // TODO:
     0
 };
