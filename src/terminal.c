@@ -81,9 +81,12 @@ static void terminal_input_push(terminal_t *t, uint8_t ch) {
  * Terminal ↔ Window association via user_data pointer
  *=========================================================================*/
 
+static bool terminal_event(hwnd_t hwnd, const window_event_t *event);
+
 terminal_t *terminal_from_hwnd(hwnd_t hwnd) {
     window_t *win = wm_get_window(hwnd);
-    return win ? (terminal_t *)win->user_data : NULL;
+    if (!win || win->event_handler != terminal_event) return NULL;
+    return (terminal_t *)win->user_data;
 }
 
 hwnd_t terminal_get_hwnd(terminal_t *t) {

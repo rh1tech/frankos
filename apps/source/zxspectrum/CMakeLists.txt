@@ -13,6 +13,8 @@ set(COMPILED_DIR "${CMAKE_SOURCE_DIR}/../../compiled")
 
 add_executable(${PROJECT_NAME}
     main.c
+    Z80.c
+    z80_arm.S
     ${CMAKE_CURRENT_SOURCE_DIR}/../../../api/m-os-api-sdtfn.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../../api/m-os-api-math.c
 )
@@ -34,10 +36,14 @@ target_link_options(${PROJECT_NAME} PRIVATE
 if (CMAKE_C_COMPILER_ID STREQUAL "GNU")
 target_compile_options(${PROJECT_NAME} PUBLIC
     -O2
+    -ffixed-r9
     -fno-builtin-printf
     -Werror=implicit-function-declaration
     -include _ansi.h
 )
+# Z80 C interpreter is huge (~56KB at -O2). Compile for size — the hot path
+# runs through the ARM ASM dispatcher, so -Os here only affects rare opcodes.
+set_source_files_properties(Z80.c PROPERTIES COMPILE_FLAGS "-Os")
 endif()
 
 # Read version from version.txt ("major minor" format)
@@ -55,6 +61,9 @@ endif()
 target_compile_definitions(${PROJECT_NAME} PRIVATE
     configSTACK_DEPTH_TYPE=uint32_t
     FRANK_VERSION_STR="${FRANK_VERSION_STR}"
+    ZXSPECTRUM=1
+    EXECZ80=1
+    LSB_FIRST=1
 )
 
 pico_enable_stdio_uart(${PROJECT_NAME} 0)

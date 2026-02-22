@@ -591,6 +591,7 @@ unsigned long __in_systable() __aligned(4096) sys_table_ptrs[] = {
     file_dialog_open, // 439
     file_dialog_get_path, // 440
     wd_button, // 441
+    wd_fb_ptr, // 442
     // TODO:
     0
 };

@@ -204,6 +204,13 @@ void wd_icon_32(int16_t x, int16_t y, const uint8_t *icon_data) {
                               draw_ctx.ox, draw_ctx.oy, draw_ctx.cw, draw_ctx.ch);
 }
 
+uint8_t *wd_fb_ptr(int16_t cx, int16_t cy, int16_t *stride) {
+    if (!draw_ctx.active) return NULL;
+    *stride = FB_STRIDE;
+    return &display_draw_buffer_ptr[(draw_ctx.oy + cy) * FB_STRIDE
+                                    + ((draw_ctx.ox + cx) >> 1)];
+}
+
 void wd_button(int16_t x, int16_t y, int16_t w, int16_t h,
                const char *label, bool focused, bool pressed) {
     if (!draw_ctx.active) return;

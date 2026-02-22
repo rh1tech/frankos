@@ -507,6 +507,15 @@ static inline void wd_button(int16_t x, int16_t y, int16_t w, int16_t h,
     ((fn_t)_sys_table_ptrs[441])(x, y, w, h, label, focused, pressed);
 }
 
+/* 442: wd_fb_ptr — direct framebuffer pointer for fast rendering.
+ * Returns pointer to framebuffer byte at client (cx,cy).
+ * cx must be even (pair-encoded byte boundary).
+ * Sets *stride to FB_STRIDE (320). Returns NULL if no active context. */
+static inline uint8_t *wd_fb_ptr(int16_t cx, int16_t cy, int16_t *stride) {
+    typedef uint8_t *(*fn_t)(int16_t, int16_t, int16_t*);
+    return ((fn_t)_sys_table_ptrs[442])(cx, cy, stride);
+}
+
 #ifdef __cplusplus
 }
 #endif

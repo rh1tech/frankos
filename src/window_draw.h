@@ -87,6 +87,13 @@ void wd_icon_16(int16_t x, int16_t y, const uint8_t *icon_data);
 /* 32x32 icon (auto-clipped to client area) */
 void wd_icon_32(int16_t x, int16_t y, const uint8_t *icon_data);
 
+/* Direct framebuffer pointer for performance-critical rendering.
+ * Returns pointer to the framebuffer byte at client (cx,cy).
+ * cx must be even (pair-encoded byte boundary).
+ * Sets *stride to the row stride in bytes.
+ * Returns NULL if no active drawing context. */
+uint8_t *wd_fb_ptr(int16_t cx, int16_t cy, int16_t *stride);
+
 /* Standard Win95-style push button (auto-clipped to client area).
  * label   - button text (centered)
  * focused - if true, draws dotted focus rectangle
