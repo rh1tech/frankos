@@ -430,9 +430,10 @@ static inline TimerHandle_t xTimerCreate(const char *name, uint32_t period,
 
 /* 428: xTimerGenericCommandFromTask — underlying function for timer macros.
  * FreeRTOS command IDs: START=1, STOP=3, DELETE=5 */
-#define _tmrCOMMAND_START   1
-#define _tmrCOMMAND_STOP    3
-#define _tmrCOMMAND_DELETE  5
+#define _tmrCOMMAND_START           1
+#define _tmrCOMMAND_STOP            3
+#define _tmrCOMMAND_CHANGE_PERIOD   4
+#define _tmrCOMMAND_DELETE          5
 
 /* xTaskGetTickCount is at sys_table index 17 */
 static inline uint32_t _app_xTaskGetTickCount(void) {
@@ -451,6 +452,14 @@ static inline int32_t xTimerStop(TimerHandle_t xTimer, uint32_t xTicksToWait) {
     typedef int32_t (*fn_t)(TimerHandle_t, int32_t, uint32_t, int32_t*, uint32_t);
     return ((fn_t)_sys_table_ptrs[428])(xTimer, _tmrCOMMAND_STOP,
                                          0, 0, xTicksToWait);
+}
+
+static inline int32_t xTimerChangePeriod(TimerHandle_t xTimer,
+                                          uint32_t xNewPeriodTicks,
+                                          uint32_t xTicksToWait) {
+    typedef int32_t (*fn_t)(TimerHandle_t, int32_t, uint32_t, int32_t*, uint32_t);
+    return ((fn_t)_sys_table_ptrs[428])(xTimer, _tmrCOMMAND_CHANGE_PERIOD,
+                                         xNewPeriodTicks, 0, xTicksToWait);
 }
 
 static inline int32_t xTimerDelete(TimerHandle_t xTimer, uint32_t xTicksToWait) {
