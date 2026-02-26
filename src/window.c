@@ -913,6 +913,28 @@ void wm_composite(void) {
     /* Overlay menus — drawn after all windows and taskbar (always
      * when open — cheap and prevents overwrite by window paint) */
     startmenu_draw();
+
+    /* If the dropdown switched to a different menu, repaint the parent
+     * window to erase stale dropdown pixels left from the previous
+     * position.  This runs in the overlay phase (after popup-freeze)
+     * so the parent's content is restored, then the new dropdown is
+     * drawn on top immediately below. */
+    if (menu_dropdown_moved()) {
+        hwnd_t mhwnd = menu_get_open_hwnd();
+        window_t *mwin = mhwnd != HWND_NULL ? wm_get_window(mhwnd) : NULL;
+        if (mwin && (mwin->flags & WF_VISIBLE)) {
+            draw_window_decorations(mhwnd, mwin);
+            if (mwin->paint_handler) {
+                point_t co = theme_client_origin(&mwin->frame, mwin->flags);
+                rect_t  cr = theme_client_rect(&mwin->frame, mwin->flags);
+                if (co.y + cr.h <= FB_HEIGHT && co.x >= 0) {
+                    wd_begin(mhwnd);
+                    mwin->paint_handler(mhwnd);
+                    wd_end();
+                }
+            }
+        }
+    }
     menu_draw_dropdown();
     menu_popup_draw();
     sysmenu_draw();

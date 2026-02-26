@@ -315,14 +315,14 @@ static void fnd_post_result(uint16_t result) {
 static void fnd_activate_button(int idx) {
     if (fnd_replace_mode) {
         switch (idx) {
-            case 0: fnd_post_result(DLG_RESULT_FIND_NEXT); return;
-            case 1: fnd_post_result(DLG_RESULT_REPLACE); return;
-            case 2: fnd_post_result(DLG_RESULT_REPLACE_ALL); return;
+            case 0: fnd_post_result(DLG_RESULT_FIND_NEXT); fnd_do_close(); return;
+            case 1: fnd_post_result(DLG_RESULT_REPLACE); fnd_do_close(); return;
+            case 2: fnd_post_result(DLG_RESULT_REPLACE_ALL); fnd_do_close(); return;
             case 3: fnd_do_close(); return;
         }
     } else {
         switch (idx) {
-            case 0: fnd_post_result(DLG_RESULT_FIND_NEXT); return;
+            case 0: fnd_post_result(DLG_RESULT_FIND_NEXT); fnd_do_close(); return;
             case 1: fnd_do_close(); return;
         }
     }

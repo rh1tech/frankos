@@ -500,8 +500,10 @@ static void input_task(void *params) {
             }
             prev_buttons = buttons;
 
-            /* Button state changed — full recomposite needed */
-            if (changed) {
+            /* Button state changed or held — full recomposite needed.
+             * When buttons are held (drag), the target window needs
+             * WM_MOUSEMOVE events dispatched for selection tracking. */
+            if (changed || buttons) {
                 g_video_dirty = true;
             } else {
                 /* Move only — cheap show-buffer cursor update */

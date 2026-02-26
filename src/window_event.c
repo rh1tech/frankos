@@ -464,6 +464,17 @@ void wm_handle_mouse_input(uint8_t type, int16_t x, int16_t y, uint8_t buttons) 
 
     /* Close menus on desktop click */
     if (type == WM_LBUTTONDOWN) {
+        /* A new click always cancels any stale titlebar-button capture.
+         * Normally LBUTTONUP clears it, but if an overlay consumed the
+         * LBUTTONUP, the capture stays set and blocks all MOUSEMOVE
+         * events (the tracker at line ~611 returns early).  Clearing
+         * here guarantees the drag path is unblocked for this click. */
+        if (titlebar_btn_hwnd != HWND_NULL) {
+            titlebar_btn_shown = false;
+            wm_invalidate(titlebar_btn_hwnd);
+            titlebar_btn_hwnd = HWND_NULL;
+            titlebar_btn_zone = HT_NOWHERE;
+        }
         if (taskbar_popup_is_open()) taskbar_popup_close();
         if (startmenu_is_open()) startmenu_close();
         if (sysmenu_is_open()) sysmenu_close();

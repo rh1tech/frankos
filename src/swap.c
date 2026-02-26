@@ -212,6 +212,12 @@ void swap_resume(hwnd_t hwnd) {
 void swap_switch_to(hwnd_t hwnd) {
     if (hwnd == active_fg) return;
 
+    /* If the target is a non-registered window (dialog, child window),
+     * don't change the foreground.  This prevents suspending the active
+     * app when the user clicks on its own dialog (e.g. file save dialog,
+     * find dialog, message box). */
+    if (hwnd != HWND_NULL && !find_entry(hwnd)) return;
+
     /* Cancel any pending deferred resume.  If an app just exited and
      * set deferred_resume_hwnd, but we're now explicitly switching to a
      * new foreground (e.g. launching a new app), the deferred resume

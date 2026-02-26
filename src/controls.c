@@ -1029,7 +1029,13 @@ static bool ta_mouse_event(textarea_t *ta, const window_event_t *event) {
     }
 
     if (event->type == WM_MOUSEMOVE && (event->mouse.buttons & 1)) {
-        /* Drag selection */
+        /* Drag selection — WM_MOUSEMOVE is always sent before
+         * WM_LBUTTONDOWN in the same PS/2 poll (main.c line 489),
+         * so the first drag MOUSEMOVE may arrive before LBUTTONDOWN
+         * has set sel_anchor.  Seed it from the current cursor. */
+        if (ta->sel_anchor < 0)
+            ta->sel_anchor = ta->cursor;
+
         int32_t click_line = (my - ty + ta->scroll_y) / FONT_UI_HEIGHT;
         int32_t click_col = (mx - tx + ta->scroll_x) / FONT_UI_WIDTH;
         if (click_line < 0) click_line = 0;
@@ -1041,9 +1047,6 @@ static bool ta_mouse_event(textarea_t *ta, const window_event_t *event) {
         if (click_col > ll) click_col = ll;
 
         ta->cursor = ls + click_col;
-        /* sel_anchor stays at mousedown position */
-        if (ta->cursor == ta->sel_anchor)
-            ta->sel_anchor = -1; /* No selection if same pos */
 
         ta->cursor_visible = true;
         wm_invalidate(ta->hwnd);

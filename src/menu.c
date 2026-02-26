@@ -26,6 +26,7 @@ static bool       menu_bars_valid[MENU_MAX_BARS]; /* true if slot has data */
 static hwnd_t  menu_open_hwnd  = HWND_NULL;   /* which window's menu is open */
 static int8_t  menu_open_index = -1;           /* which top-level menu is open (-1=none) */
 static int8_t  menu_hover_item = -1;           /* hovered item in dropdown (-1=none) */
+static bool    menu_dd_moved   = false;        /* dropdown position changed — parent needs repaint */
 
 /* Cached dropdown position */
 static int16_t dropdown_x, dropdown_y, dropdown_w, dropdown_h;
@@ -307,6 +308,7 @@ bool menu_dropdown_mouse(uint8_t type, int16_t x, int16_t y) {
                         if (i != menu_open_index) {
                             menu_open_index = i;
                             menu_hover_item = -1;
+                            menu_dd_moved = true;
                             compute_dropdown_rect();
                             wm_mark_dirty();
                         }
@@ -367,6 +369,7 @@ bool menu_handle_key(uint8_t hid_code, uint8_t modifiers) {
         if (menu_open_index > 0) {
             menu_open_index--;
             menu_hover_item = -1;
+            menu_dd_moved = true;
             compute_dropdown_rect();
             wm_mark_dirty();
         }
@@ -376,6 +379,7 @@ bool menu_handle_key(uint8_t hid_code, uint8_t modifiers) {
         if (menu_open_index < bar->menu_count - 1) {
             menu_open_index++;
             menu_hover_item = -1;
+            menu_dd_moved = true;
             compute_dropdown_rect();
             wm_mark_dirty();
         }
@@ -416,6 +420,16 @@ void menu_close(void) {
     menu_open_index = -1;
     menu_hover_item = -1;
     wm_mark_dirty();
+}
+
+hwnd_t menu_get_open_hwnd(void) {
+    return menu_open_hwnd;
+}
+
+bool menu_dropdown_moved(void) {
+    bool r = menu_dd_moved;
+    menu_dd_moved = false;
+    return r;
 }
 
 bool menu_try_alt_key(hwnd_t hwnd, uint8_t hid_code) {

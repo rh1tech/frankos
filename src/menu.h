@@ -80,6 +80,14 @@ bool menu_is_open(void);
 /* Close any open menu */
 void menu_close(void);
 
+/* Return the hwnd whose menu is currently open (HWND_NULL if none) */
+hwnd_t menu_get_open_hwnd(void);
+
+/* Return true (once) if the dropdown switched position since last call.
+ * Used by the compositor to repaint the parent window and erase stale
+ * dropdown pixels before drawing the new dropdown overlay. */
+bool menu_dropdown_moved(void);
+
 /* Check if a window's menu bar has a menu matching an Alt+key press.
  * If found, opens that menu and returns true. */
 bool menu_try_alt_key(hwnd_t hwnd, uint8_t hid_code);
