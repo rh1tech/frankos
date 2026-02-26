@@ -71,6 +71,8 @@ static uint32_t dma_transfer_count;
 
 static volatile bool audio_running = false;
 
+static i2s_fill_cb_t fill_callback = NULL;
+
 static void audio_dma_irq_handler(void);
 
 /*==========================================================================
@@ -382,15 +384,45 @@ static void audio_dma_irq_handler(void) {
 
     if ((dma_channel_a >= 0) && (ints & (1u << dma_channel_a))) {
         dma_hw->ints0 = (1u << dma_channel_a);
+        if (fill_callback) {
+            fill_callback(0, dma_buffers[0], dma_transfer_count);
+            __dmb();
+        } else {
+            dma_buffers_free_mask |= 1u;
+        }
         dma_channel_set_read_addr(dma_channel_a, dma_buffers[0], false);
         dma_channel_set_trans_count(dma_channel_a, dma_transfer_count, false);
-        dma_buffers_free_mask |= 1u;
     }
 
     if ((dma_channel_b >= 0) && (ints & (1u << dma_channel_b))) {
         dma_hw->ints0 = (1u << dma_channel_b);
+        if (fill_callback) {
+            fill_callback(1, dma_buffers[1], dma_transfer_count);
+            __dmb();
+        } else {
+            dma_buffers_free_mask |= 2u;
+        }
         dma_channel_set_read_addr(dma_channel_b, dma_buffers[1], false);
         dma_channel_set_trans_count(dma_channel_b, dma_transfer_count, false);
-        dma_buffers_free_mask |= 2u;
     }
+}
+
+/*==========================================================================
+ * i2s_set_fill_callback — register a callback to fill DMA buffers from IRQ
+ *==========================================================================*/
+void i2s_set_fill_callback(i2s_fill_cb_t cb) {
+    fill_callback = cb;
+}
+
+/*==========================================================================
+ * i2s_start — fill both ping-pong buffers via callback and start DMA
+ *==========================================================================*/
+void i2s_start(void) {
+    if (fill_callback) {
+        fill_callback(0, dma_buffers[0], dma_transfer_count);
+        fill_callback(1, dma_buffers[1], dma_transfer_count);
+        __dmb();
+    }
+    audio_running = true;
+    dma_channel_start(dma_channel_a);
 }

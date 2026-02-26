@@ -4,20 +4,17 @@
  * https://rh1.tech
  *
  * Plays the embedded WAV file (8-bit unsigned PCM, mono, 22050 Hz) through
- * the PIO1 I2S driver at boot.  Runs as a one-shot FreeRTOS task that
- * streams audio via i2s_dma_write(), then cleans up and deletes itself.
+ * the sound mixer.  Runs as a one-shot FreeRTOS task that streams audio
+ * via snd_write(), then cleans up and deletes itself.
  *
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
 #include "startup_sound.h"
-#include "board_config.h"
-#include "audio.h"
+#include "snd.h"
 
 #include <stdint.h>
 #include <string.h>
-#include "pico/stdlib.h"
-#include "hardware/pio.h"
 #include "FreeRTOS.h"
 #include "task.h"
 
@@ -25,7 +22,7 @@
 extern const uint8_t  startup_wav_data[];
 extern const uint32_t startup_wav_size;
 
-/* Number of stereo frames per DMA chunk (~20 ms at 22050 Hz) */
+/* Number of stereo frames per write chunk (~20 ms at 22050 Hz) */
 #define CHUNK_FRAMES 441
 
 /*--------------------------------------------------------------------------
@@ -58,10 +55,7 @@ static const uint8_t *wav_find_data(const uint8_t *wav, uint32_t wav_len,
 }
 
 /*--------------------------------------------------------------------------
- * Startup sound task — I2S playback via PIO1 + DMA
- *
- * Initialises its own I2S instance (PIO1), streams converted audio, then
- * tears down I2S so the PCM API can re-init later for app use.
+ * Startup sound task — plays through the sound mixer
  *--------------------------------------------------------------------------*/
 static void startup_sound_task(void *params) {
     (void)params;
@@ -75,24 +69,15 @@ static void startup_sound_task(void *params) {
         return;
     }
 
-    /* Configure I2S for 22050 Hz playback (mono WAV → stereo I2S) */
-    i2s_config_t cfg = {
-        .sample_freq     = 22050,
-        .channel_count   = 2,
-        .data_pin        = I2S_DATA_PIN,
-        .clock_pin_base  = I2S_CLOCK_PIN_BASE,
-        .pio             = pio1,
-        .sm              = 0,
-        .dma_channel     = 0,
-        .dma_buf         = NULL,
-        .dma_trans_count = CHUNK_FRAMES,
-        .volume          = 0,
-    };
+    /* Open a mixer channel at the WAV's native sample rate */
+    int ch = snd_open(22050);
+    if (ch < 0) {
+        vTaskDelete(NULL);
+        return;
+    }
 
-    i2s_init(&cfg);
-
-    /* Stream: convert 8-bit unsigned mono → 16-bit signed stereo in chunks,
-     * then push each chunk to the I2S DMA pipeline. */
+    /* Stream: convert 8-bit unsigned mono -> 16-bit signed stereo in chunks,
+     * then push each chunk to the ring buffer via snd_write(). */
     int16_t chunk[CHUNK_FRAMES * 2];  /* L+R interleaved */
     uint32_t pos = 0;
 
@@ -101,9 +86,9 @@ static void startup_sound_task(void *params) {
         if (pos + frames > pcm_len)
             frames = pcm_len - pos;
 
-        /* 8-bit unsigned (0..255) → 16-bit signed, mono→stereo */
+        /* 8-bit unsigned (0..255) -> 16-bit signed, mono->stereo */
         for (uint32_t i = 0; i < frames; i++) {
-            int16_t s = ((int16_t)pcm[pos + i] - 128) << 6;
+            int16_t s = ((int16_t)pcm[pos + i] - 128) * 29;
             chunk[i * 2]     = s;
             chunk[i * 2 + 1] = s;
         }
@@ -113,18 +98,15 @@ static void startup_sound_task(void *params) {
             chunk[i * 2 + 1] = 0;
         }
 
-        i2s_dma_write(&cfg, chunk);
+        snd_write(ch, chunk, (int)frames);
         pos += frames;
     }
 
-    /* Flush: push silence through both DMA buffers so the last real audio
-     * makes it all the way out before we tear down the hardware. */
-    memset(chunk, 0, sizeof(chunk));
-    i2s_dma_write(&cfg, chunk);
-    i2s_dma_write(&cfg, chunk);
+    /* Let the ring buffer drain before closing.  At 22050 Hz resampled to
+     * 44100, up to 2048 source frames = ~93 ms worst case. */
+    vTaskDelay(pdMS_TO_TICKS(120));
 
-    i2s_deinit(&cfg);
-
+    snd_close(ch);
     vTaskDelete(NULL);
 }
 

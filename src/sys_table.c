@@ -41,6 +41,7 @@
 #include "usb.h"
 #include "nespad.h"
 #include "sound.h"
+#include "snd.h"
 #include "mp3dec.h"
 #include "clipboard.h"
 #include "controls.h"
@@ -642,6 +643,10 @@ unsigned long __in_systable() __aligned(4096) sys_table_ptrs[] = {
     find_dialog_case_sensitive, // 480
     find_dialog_close, // 481
     wm_mark_dirty, // 482
+    // API v.30 — Sound mixer
+    snd_open,  // 483
+    snd_write, // 484
+    snd_close, // 485
     // TODO:
     0
 };

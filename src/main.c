@@ -38,6 +38,7 @@
 #include "swap.h"
 #include "alttab.h"
 #include "sound.h"
+#include "snd.h"
 #include "startup_sound.h"
 #ifdef PSRAM_MAX_FREQ_MHZ
 #include "psram_init.h"
@@ -641,8 +642,8 @@ int main(void) {
     }
     stdio_flush();
 
-    /* Initialize I2S audio subsystem */
-    init_sound();
+    /* Initialize sound mixer (starts I2S at 44100 Hz, DMA plays silence) */
+    snd_init();
 
     /* Install multicore lockout handler on Core 1 so flash_block() can
      * safely pause Core 1 during flash erase/program operations.

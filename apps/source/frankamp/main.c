@@ -1287,7 +1287,7 @@ int main(int argc, char **argv) {
     fa->btn_pressed = -1;
     fa->pl_current = -1;
     fa->pl_selected = 0;
-    fa->volume = 75;     /* 75% of max volume (0=quiet, 100=loud) */
+    fa->volume = 68;     /* ~68% of max volume (0=quiet, 100=loud) */
 
     /* Playlist is large (~20 KB) but not time-critical — allocate
      * separately so it can spill to PSRAM, keeping SRAM free for the

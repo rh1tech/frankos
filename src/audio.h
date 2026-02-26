@@ -32,3 +32,12 @@ bool i2s_is_buffer_free(void);
 void i2s_volume(i2s_config_t *config, uint8_t volume);
 void i2s_increase_volume(i2s_config_t *config);
 void i2s_decrease_volume(i2s_config_t *config);
+
+/* Fill callback — called from DMA IRQ to populate a ping-pong buffer.
+ * buf_index: 0 or 1, buf: pointer to DMA buffer, frames: stereo frame count */
+typedef void (*i2s_fill_cb_t)(int buf_index, uint32_t *buf, uint32_t frames);
+void i2s_set_fill_callback(i2s_fill_cb_t cb);
+
+/* Start DMA playback immediately (fill callback must be set first).
+ * Both ping-pong buffers are filled via the callback, then DMA begins. */
+void i2s_start(void);

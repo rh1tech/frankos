@@ -86,6 +86,7 @@ add_executable(frankos
     src/overclock.c
     src/ram_page.c
     src/sound.c
+    src/snd.c
     src/audio.c
     src/startup_sound.c
     src/startup_wav.S
