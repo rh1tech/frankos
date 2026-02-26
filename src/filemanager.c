@@ -2046,6 +2046,13 @@ hwnd_t filemanager_create(const char *initial_path) {
  *=========================================================================*/
 
 void spawn_filemanager_window(void) {
+    if (!sdcard_is_mounted()) {
+        dialog_show(wm_get_focus(), "Navigator",
+                    "No SD card detected.\n\n"
+                    "Please insert an SD card and restart.",
+                    DLG_ICON_ERROR, DLG_BTN_OK);
+        return;
+    }
     wm_set_pending_icon(fn_icon16_open_folder);
     hwnd_t hwnd = filemanager_create("/");
     if (hwnd != HWND_NULL) {

@@ -88,7 +88,7 @@ static void startup_sound_task(void *params) {
 
         /* 8-bit unsigned (0..255) -> 16-bit signed, mono->stereo */
         for (uint32_t i = 0; i < frames; i++) {
-            int16_t s = ((int16_t)pcm[pos + i] - 128) * 29;
+            int16_t s = ((int16_t)pcm[pos + i] - 128) * 26;
             chunk[i * 2]     = s;
             chunk[i * 2 + 1] = s;
         }

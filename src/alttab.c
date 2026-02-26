@@ -114,11 +114,11 @@ bool alttab_is_active(void) {
 
 void alttab_open(void) {
     build_list();
-    if (at_count < 2) return;  /* nothing to switch to */
+    if (at_count < 1) return;  /* no windows at all */
 
     at_active = true;
     at_original_focus = wm_get_focus();
-    at_sel = 1;  /* pre-select the second entry (the one we're switching TO) */
+    at_sel = (at_count >= 2) ? 1 : 0;  /* pre-select second entry, or only entry */
     calc_geometry();
 }
 

@@ -137,6 +137,10 @@ static TimerHandle_t fd_blink_timer = NULL;
 /* Overwrite confirmation pending state */
 static bool     fd_overwrite_pending;
 
+/* Scrollbar thumb drag state */
+static bool     fd_sb_dragging;
+static int16_t  fd_sb_drag_offset;   /* mouse Y relative to thumb top */
+
 /*==========================================================================
  * Extension matching (case-insensitive)
  *=========================================================================*/
@@ -884,12 +888,11 @@ static bool fd_event(hwnd_t hwnd, const window_event_t *event) {
             }
         }
 
-        /* Hit-test: Scrollbar track (page up/down) */
+        /* Hit-test: Scrollbar track (thumb drag / page up/down) */
         if (mx >= FD_SB_X && mx < FD_SB_X + FD_SB_W &&
             my >= FD_SB_Y + FD_SB_W &&
             my < FD_SB_Y + FD_SB_H - FD_SB_W &&
             fd_count > FD_MAX_VISIBLE) {
-            /* Determine if above or below thumb */
             int track_y = FD_SB_Y + FD_SB_W;
             int track_h = FD_SB_H - 2 * FD_SB_W;
             int max_scroll = fd_count - FD_MAX_VISIBLE;
@@ -899,11 +902,15 @@ static bool fd_event(hwnd_t hwnd, const window_event_t *event) {
             if (max_scroll > 0)
                 thumb_y = track_y + (track_h - thumb_h) * fd_scroll / max_scroll;
 
-            if (my < thumb_y) {
+            if (my >= thumb_y && my < thumb_y + thumb_h) {
+                /* Thumb drag start */
+                fd_sb_dragging = true;
+                fd_sb_drag_offset = (int16_t)(my - thumb_y);
+            } else if (my < thumb_y) {
                 /* Page up */
                 fd_scroll -= FD_MAX_VISIBLE;
                 if (fd_scroll < 0) fd_scroll = 0;
-            } else if (my >= thumb_y + thumb_h) {
+            } else {
                 /* Page down */
                 fd_scroll += FD_MAX_VISIBLE;
                 if (fd_scroll > max_scroll) fd_scroll = max_scroll;
@@ -982,9 +989,36 @@ static bool fd_event(hwnd_t hwnd, const window_event_t *event) {
         return true;
     }
 
+    case WM_MOUSEMOVE: {
+        if (fd_sb_dragging && fd_count > FD_MAX_VISIBLE) {
+            int my = event->mouse.y;
+            int track_y = FD_SB_Y + FD_SB_W;
+            int track_h = FD_SB_H - 2 * FD_SB_W;
+            int max_scroll = fd_count - FD_MAX_VISIBLE;
+            int thumb_h = track_h * FD_MAX_VISIBLE / fd_count;
+            if (thumb_h < 16) thumb_h = 16;
+            int avail = track_h - thumb_h;
+            if (avail > 0) {
+                int thumb_top = my - fd_sb_drag_offset;
+                int pos = (thumb_top - track_y) * max_scroll / avail;
+                if (pos < 0) pos = 0;
+                if (pos > max_scroll) pos = max_scroll;
+                fd_scroll = (int16_t)pos;
+                wm_invalidate(fd_hwnd);
+            }
+        }
+        return true;
+    }
+
     case WM_LBUTTONUP: {
         int mx = event->mouse.x;
         int my = event->mouse.y;
+
+        /* Scrollbar thumb drag release */
+        if (fd_sb_dragging) {
+            fd_sb_dragging = false;
+            return true;
+        }
 
         /* Up button release */
         if (fd_up_pressed) {

@@ -331,18 +331,20 @@ static void reset_game(minesweeper_t *ms) {
 
     compute_layout(ms);
 
-    /* Resize window */
+    /* Resize window — only recenter if size actually changed */
     int16_t cw, ch, fw, fh;
     get_client_size(ms, &cw, &ch);
     client_to_frame(cw, ch, &fw, &fh);
 
     window_t *win = wm_get_window(ms->hwnd);
     if (win) {
-        /* Center on screen */
-        int16_t x = (DISPLAY_WIDTH - fw) / 2;
-        int16_t y = (DISPLAY_HEIGHT - TASKBAR_HEIGHT - fh) / 2;
-        if (y < 0) y = 0;
-        wm_set_window_rect(ms->hwnd, x, y, fw, fh);
+        if (fw != win->frame.w || fh != win->frame.h) {
+            /* Difficulty changed — recenter for new size */
+            int16_t x = (DISPLAY_WIDTH - fw) / 2;
+            int16_t y = (DISPLAY_HEIGHT - TASKBAR_HEIGHT - fh) / 2;
+            if (y < 0) y = 0;
+            wm_set_window_rect(ms->hwnd, x, y, fw, fh);
+        }
     }
 
     wm_invalidate(ms->hwnd);

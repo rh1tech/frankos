@@ -14,6 +14,7 @@
 #include "terminal.h"
 #include "filemanager.h"
 #include "app.h"
+#include "cursor.h"
 #include "gfx.h"
 #include "font.h"
 #include "display.h"
@@ -229,6 +230,8 @@ extern void spawn_terminal_window(void);
 
 static void execute_sub_item(int index) {
     startmenu_close();
+    cursor_set_type(CURSOR_WAIT);
+    wm_composite();  /* flush frame so hourglass is visible during load */
     extern const uint8_t default_icon_16x16[256];
     if (index < fos_app_count) {
         wm_set_pending_icon(fos_apps[index].has_icon
@@ -242,6 +245,7 @@ static void execute_sub_item(int index) {
         wm_set_pending_icon(default_icon_16x16);
         spawn_terminal_window();
     }
+    cursor_set_type(CURSOR_ARROW);
 }
 
 static void execute_item(uint8_t id) {
