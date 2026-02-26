@@ -212,6 +212,13 @@ void swap_resume(hwnd_t hwnd) {
 void swap_switch_to(hwnd_t hwnd) {
     if (hwnd == active_fg) return;
 
+    /* Cancel any pending deferred resume.  If an app just exited and
+     * set deferred_resume_hwnd, but we're now explicitly switching to a
+     * new foreground (e.g. launching a new app), the deferred resume
+     * must NOT fire — it would memcpy over the shared stack while the
+     * new app task is already running on it, corrupting its state. */
+    deferred_resume_hwnd = HWND_NULL;
+
     /* Suspend current foreground (if registered and not background) */
     if (active_fg != HWND_NULL) {
         swap_entry_t *old = find_entry(active_fg);
@@ -236,6 +243,11 @@ void swap_switch_to(hwnd_t hwnd) {
 bool swap_is_suspended(hwnd_t hwnd) {
     swap_entry_t *e = find_entry(hwnd);
     return e ? e->suspended : false;
+}
+
+bool swap_is_background(hwnd_t hwnd) {
+    swap_entry_t *e = find_entry(hwnd);
+    return e ? e->background : false;
 }
 
 void swap_set_background(hwnd_t hwnd) {
@@ -333,6 +345,14 @@ void swap_force_close(hwnd_t hwnd) {
 
     /* 6. Unregister from swap table */
     swap_unregister(hwnd);
+}
+
+void swap_cancel_deferred(void) {
+    deferred_resume_hwnd = HWND_NULL;
+}
+
+bool swap_find_by_task(TaskHandle_t task) {
+    return find_entry_by_task(task) != NULL;
 }
 
 StackType_t *swap_get_shared_stack(void) {

@@ -36,6 +36,7 @@
 #include "disphstx.h"
 #include "psram.h"
 #include "swap.h"
+#include "alttab.h"
 #include "sound.h"
 #include "startup_sound.h"
 #ifdef PSRAM_MAX_FREQ_MHZ
@@ -378,10 +379,30 @@ static void input_task(void *params) {
                 }
             }
 
-            /* Intercept Alt+Tab: cycle focus between windows */
+            /* Alt+Tab overlay: open on first press, cycle on repeat */
             if (kev.pressed && (kev.modifiers & KBD_MOD_ALT) &&
                 kev.hid_code == 0x2B /* HID_KEY_TAB */) {
-                wm_cycle_focus();
+                if (!alttab_is_active())
+                    alttab_open();
+                else
+                    alttab_cycle();
+                g_video_dirty = true;
+                continue;
+            }
+
+            /* Alt release while overlay active → commit selection */
+            if (!kev.pressed &&
+                (kev.hid_code == 0xE2 || kev.hid_code == 0xE6) &&
+                alttab_is_active()) {
+                alttab_commit();
+                g_video_dirty = true;
+                continue;
+            }
+
+            /* Escape while overlay active → cancel */
+            if (kev.pressed && kev.hid_code == 0x29 /* HID_KEY_ESCAPE */ &&
+                alttab_is_active()) {
+                alttab_cancel();
                 g_video_dirty = true;
                 continue;
             }

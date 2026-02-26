@@ -1302,6 +1302,10 @@ static void __in_hfa() vAppDetachedTask(void *pv) {
     set_scancode_handler(0);
     set_cp866_handler(0);
     /* ================================== */
+    /* Elevate priority above compositor (pri 2) so the deferred resume
+     * is not processed until after vTaskDelete — prevents the compositor
+     * from overwriting our shared stack while we're still using it. */
+    vTaskPrioritySet(NULL, configMAX_PRIORITIES - 1);
     /* Unregister from swap manager and auto-resume previous app */
     swap_unregister_by_task(th);
     swap_resume_previous();
@@ -1367,6 +1371,10 @@ void __in_hfa() __exit(int status) {
     set_usb_detached_handler(0);
     set_scancode_handler(0);
     set_cp866_handler(0);
+    /* Elevate priority above compositor (pri 2) so the deferred resume
+     * is not processed until after vTaskDelete — prevents the compositor
+     * from overwriting our shared stack while we're still using it. */
+    vTaskPrioritySet(NULL, configMAX_PRIORITIES - 1);
     /* Unregister from swap and resume previous app */
     swap_unregister_by_task(th);
     swap_resume_previous();
@@ -1594,6 +1602,13 @@ e:
 }
 
 void __in_hfa() launch_elf_app(const char *path) {
+    /* Cancel any pending deferred resume before launching a new app.
+     * If a previous app just exited and set a deferred resume, firing
+     * it now would overwrite the shared stack while the new app task
+     * is running on it.  swap_switch_to(HWND_NULL) may early-return
+     * if active_fg is already HWND_NULL, so we cancel explicitly. */
+    swap_cancel_deferred();
+
     /* Suspend current foreground app before launching new one */
     swap_switch_to(HWND_NULL);
 

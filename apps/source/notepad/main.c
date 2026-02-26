@@ -66,50 +66,60 @@ static void *app_task;
 static volatile bool app_closing;
 
 /*==========================================================================
- * Menu bar definition
+ * Menu setup
  *=========================================================================*/
 
-static const menu_bar_t np_menubar = {
-    .menu_count = 3,
-    .menus = {
-        {
-            .title = "File",
-            .accel_key = 0,
-            .item_count = 6,
-            .items = {
-                { .text = "New",        .command_id = CMD_NEW,     .flags = 0, .accel_key = 0 },
-                { .text = "Open...",    .command_id = CMD_OPEN,    .flags = 0, .accel_key = 0 },
-                { .text = "Save",       .command_id = CMD_SAVE,    .flags = 0, .accel_key = 0 },
-                { .text = "Save As...", .command_id = CMD_SAVE_AS, .flags = 0, .accel_key = 0 },
-                { .text = "",           .command_id = 0,           .flags = MIF_SEPARATOR, .accel_key = 0 },
-                { .text = "Exit",       .command_id = CMD_EXIT,    .flags = 0, .accel_key = 0 },
-            }
-        },
-        {
-            .title = "Edit",
-            .accel_key = 0,
-            .item_count = 8,
-            .items = {
-                { .text = "Cut",        .command_id = CMD_CUT,        .flags = 0, .accel_key = 0 },
-                { .text = "Copy",       .command_id = CMD_COPY,       .flags = 0, .accel_key = 0 },
-                { .text = "Paste",      .command_id = CMD_PASTE,      .flags = 0, .accel_key = 0 },
-                { .text = "Select All", .command_id = CMD_SELECT_ALL, .flags = 0, .accel_key = 0 },
-                { .text = "",           .command_id = 0,              .flags = MIF_SEPARATOR, .accel_key = 0 },
-                { .text = "Find...",    .command_id = CMD_FIND,       .flags = 0, .accel_key = 0 },
-                { .text = "Replace...", .command_id = CMD_REPLACE,    .flags = 0, .accel_key = 0 },
-                { .text = "",           .command_id = 0,              .flags = MIF_SEPARATOR, .accel_key = 0 },
-            }
-        },
-        {
-            .title = "Help",
-            .accel_key = 0,
-            .item_count = 1,
-            .items = {
-                { .text = "About Notepad", .command_id = CMD_ABOUT, .flags = 0, .accel_key = 0 },
-            }
-        }
-    }
-};
+static void np_setup_menu(hwnd_t hwnd) {
+    menu_bar_t bar;
+    memset(&bar, 0, sizeof(bar));
+    bar.menu_count = 3;
+
+    /* File menu */
+    menu_def_t *file = &bar.menus[0];
+    strncpy(file->title, "File", sizeof(file->title) - 1);
+    file->accel_key = 0x09; /* HID 'F' */
+    file->item_count = 6;
+    strncpy(file->items[0].text, "New",        sizeof(file->items[0].text) - 1);
+    file->items[0].command_id = CMD_NEW;
+    strncpy(file->items[1].text, "Open...",    sizeof(file->items[1].text) - 1);
+    file->items[1].command_id = CMD_OPEN;
+    strncpy(file->items[2].text, "Save",       sizeof(file->items[2].text) - 1);
+    file->items[2].command_id = CMD_SAVE;
+    strncpy(file->items[3].text, "Save As...", sizeof(file->items[3].text) - 1);
+    file->items[3].command_id = CMD_SAVE_AS;
+    file->items[4].flags = MIF_SEPARATOR;
+    strncpy(file->items[5].text, "Exit",       sizeof(file->items[5].text) - 1);
+    file->items[5].command_id = CMD_EXIT;
+
+    /* Edit menu */
+    menu_def_t *edit = &bar.menus[1];
+    strncpy(edit->title, "Edit", sizeof(edit->title) - 1);
+    edit->accel_key = 0x08; /* HID 'E' */
+    edit->item_count = 7;
+    strncpy(edit->items[0].text, "Cut",        sizeof(edit->items[0].text) - 1);
+    edit->items[0].command_id = CMD_CUT;
+    strncpy(edit->items[1].text, "Copy",       sizeof(edit->items[1].text) - 1);
+    edit->items[1].command_id = CMD_COPY;
+    strncpy(edit->items[2].text, "Paste",      sizeof(edit->items[2].text) - 1);
+    edit->items[2].command_id = CMD_PASTE;
+    strncpy(edit->items[3].text, "Select All", sizeof(edit->items[3].text) - 1);
+    edit->items[3].command_id = CMD_SELECT_ALL;
+    edit->items[4].flags = MIF_SEPARATOR;
+    strncpy(edit->items[5].text, "Find...",    sizeof(edit->items[5].text) - 1);
+    edit->items[5].command_id = CMD_FIND;
+    strncpy(edit->items[6].text, "Replace...", sizeof(edit->items[6].text) - 1);
+    edit->items[6].command_id = CMD_REPLACE;
+
+    /* Help menu */
+    menu_def_t *help = &bar.menus[2];
+    strncpy(help->title, "Help", sizeof(help->title) - 1);
+    help->accel_key = 0x0B; /* HID 'H' */
+    help->item_count = 1;
+    strncpy(help->items[0].text, "About Notepad", sizeof(help->items[0].text) - 1);
+    help->items[0].command_id = CMD_ABOUT;
+
+    menu_set(hwnd, &bar);
+}
 
 /*==========================================================================
  * Title bar update
@@ -339,7 +349,13 @@ static bool np_event(hwnd_t hwnd, const window_event_t *event) {
     else if (event->type == WM_SIZE) {
         int16_t w = event->size.w;
         int16_t h = event->size.h;
-        textarea_set_rect(&np.ta, 0, 0, w, h);
+        textarea_set_rect(&np.ta, 4, 2, w - 8, h - 4);
+        wm_invalidate(np.hwnd);
+        return true;
+    }
+
+    else if (event->type == WM_SETFOCUS) {
+        /* Ensure textarea repaints when focus returns (e.g. after dialog) */
         wm_invalidate(np.hwnd);
         return true;
     }
@@ -410,8 +426,8 @@ static bool np_event(hwnd_t hwnd, const window_event_t *event) {
         }
         else if (cmd == CMD_ABOUT) {
             dialog_show(np.hwnd, "About Notepad",
-                        "Notepad for FRANK OS\n"
-                        "Version " FRANK_VERSION_STR,
+                        "Notepad\n\nFRANK OS v" FRANK_VERSION_STR
+                        " (c) 2026\nMikhail Matveev",
                         DLG_ICON_INFO, DLG_BTN_OK);
             return true;
         }
@@ -423,6 +439,7 @@ static bool np_event(hwnd_t hwnd, const window_event_t *event) {
             if (path && path[0]) {
                 np_load_file(path);
             }
+            wm_invalidate(np.hwnd);
             return true;
         }
         else if (cmd == DLG_RESULT_FILE_SAVE) {
@@ -436,6 +453,7 @@ static bool np_event(hwnd_t hwnd, const window_event_t *event) {
             if (np.pending_action != PENDING_NONE) {
                 np_resume_pending();
             }
+            wm_invalidate(np.hwnd);
             return true;
         }
         else if (cmd == DLG_RESULT_YES) {
@@ -449,23 +467,27 @@ static bool np_event(hwnd_t hwnd, const window_event_t *event) {
                  * after the save dialog completes. */
                 np_do_save_as();
             }
+            wm_invalidate(np.hwnd);
             return true;
         }
         else if (cmd == DLG_RESULT_NO) {
             /* Don't save — just resume pending action */
             np.modified = false;
             np_resume_pending();
+            wm_invalidate(np.hwnd);
             return true;
         }
         else if (cmd == DLG_RESULT_CANCEL) {
             /* Cancel — abort pending action */
             np.pending_action = PENDING_NONE;
+            wm_invalidate(np.hwnd);
             return true;
         }
         else if (cmd == DLG_RESULT_FIND_NEXT) {
             const char *needle = find_dialog_get_text();
             bool cs = find_dialog_case_sensitive();
             textarea_find(&np.ta, needle, cs, true);
+            wm_invalidate(np.hwnd);
             return true;
         }
         else if (cmd == DLG_RESULT_REPLACE) {
@@ -476,6 +498,7 @@ static bool np_event(hwnd_t hwnd, const window_event_t *event) {
                 np.modified = true;
                 np_update_title();
             }
+            wm_invalidate(np.hwnd);
             return true;
         }
         else if (cmd == DLG_RESULT_REPLACE_ALL) {
@@ -487,6 +510,12 @@ static bool np_event(hwnd_t hwnd, const window_event_t *event) {
                 np.modified = true;
                 np_update_title();
             }
+            wm_invalidate(np.hwnd);
+            return true;
+        }
+        else if (cmd == DLG_RESULT_OK) {
+            /* About dialog closed — just repaint */
+            wm_invalidate(np.hwnd);
             return true;
         }
 
@@ -608,7 +637,7 @@ int main(int argc, char **argv) {
 
     np.hwnd = wm_create_window(40, 20, win_w, win_h,
                                  "Untitled - Notepad",
-                                 WSTYLE_DEFAULT,
+                                 WSTYLE_DEFAULT | WF_MENUBAR,
                                  np_event, np_paint);
     if (np.hwnd == HWND_NULL) {
         free(np.text_buf);
@@ -616,14 +645,14 @@ int main(int argc, char **argv) {
     }
 
     /* Set up menu bar */
-    menu_set(np.hwnd, &np_menubar);
+    np_setup_menu(np.hwnd);
 
     /* Initialize textarea */
     textarea_init(&np.ta, np.text_buf, NP_TEXT_BUF_SIZE, np.hwnd);
 
-    /* Set textarea to fill client area */
+    /* Set textarea to fill client area (with padding) */
     rect_t cr = wm_get_client_rect(np.hwnd);
-    textarea_set_rect(&np.ta, 0, 0, cr.w, cr.h);
+    textarea_set_rect(&np.ta, 4, 2, cr.w - 8, cr.h - 4);
 
     /* Initialize state */
     np.filepath[0] = '\0';

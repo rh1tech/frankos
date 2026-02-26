@@ -44,6 +44,9 @@ void swap_switch_to(hwnd_t hwnd);
 /* Query whether an app is suspended */
 bool swap_is_suspended(hwnd_t hwnd);
 
+/* Query whether an app is a background app (never suspended) */
+bool swap_is_background(hwnd_t hwnd);
+
 /* Mark an app as background (never suspended, e.g. FrankAmp) */
 void swap_set_background(hwnd_t hwnd);
 void swap_set_background_by_task(TaskHandle_t task);
@@ -69,8 +72,18 @@ void swap_resume_previous(void);
  * each frame.  Returns true if a resume was performed. */
 bool swap_process_deferred(void);
 
+/* Cancel any pending deferred resume.  Call before launching a new
+ * app to prevent the deferred resume from overwriting the shared
+ * stack while the new task is running on it. */
+void swap_cancel_deferred(void);
+
 /* Force-close a suspended app (delete task, destroy window, free ctx) */
 void swap_force_close(hwnd_t hwnd);
+
+/* Check whether a task already has a registered swap entry.
+ * Returns true if found (used to prevent double-registration of
+ * child windows created by the same task). */
+bool swap_find_by_task(TaskHandle_t task);
 
 /* Return pointer to the shared SRAM stack (for task creation) */
 StackType_t *swap_get_shared_stack(void);

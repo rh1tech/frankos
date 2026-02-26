@@ -165,6 +165,7 @@ void PatchZ80(Z80 *R) {
 #define CMD_LOAD_TAP  1
 #define CMD_RESET     2
 #define CMD_EXIT      3
+#define CMD_ABOUT     4
 
 static void handle_tape_trap(void *ud);
 static void load_tap_file(const char *path);
@@ -531,7 +532,7 @@ int main(int argc, char **argv) {
 static void setup_menu(hwnd_t hwnd) {
     menu_bar_t bar;
     memset(&bar, 0, sizeof(bar));
-    bar.menu_count = 1;
+    bar.menu_count = 2;
 
     menu_def_t *file = &bar.menus[0];
     strncpy(file->title, "File", sizeof(file->title) - 1);
@@ -548,6 +549,14 @@ static void setup_menu(hwnd_t hwnd) {
 
     strncpy(file->items[3].text, "Exit", 19);
     file->items[3].command_id = CMD_EXIT;
+
+    /* Help menu */
+    menu_def_t *help = &bar.menus[1];
+    strncpy(help->title, "Help", sizeof(help->title) - 1);
+    help->accel_key = 0x0B; /* HID 'H' */
+    help->item_count = 1;
+    strncpy(help->items[0].text, "About", 19);
+    help->items[0].command_id = CMD_ABOUT;
 
     menu_set(hwnd, &bar);
 }
@@ -572,6 +581,13 @@ static bool handle_menu_command(hwnd_t hwnd, app_globals_t *g, int command_id) {
     }
     if (command_id == CMD_LOAD_TAP) {
         file_dialog_open(hwnd, "Load TAP", "/", ".tap");
+        return true;
+    }
+    if (command_id == CMD_ABOUT) {
+        dialog_show(hwnd, "About ZX Spectrum",
+                    "ZX Spectrum\n\nFRANK OS v" FRANK_VERSION_STR
+                    " (c) 2026\nMikhail Matveev",
+                    DLG_ICON_INFO, DLG_BTN_OK);
         return true;
     }
     return false;

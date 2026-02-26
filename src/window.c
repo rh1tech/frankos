@@ -19,6 +19,7 @@
 #include "startmenu.h"
 #include "sysmenu.h"
 #include "swap.h"
+#include "alttab.h"
 #include "FreeRTOS.h"
 #include "task.h"
 #include <string.h>
@@ -168,12 +169,20 @@ hwnd_t wm_create_window(int16_t x, int16_t y, int16_t w, int16_t h,
             z_stack[z_count++] = hwnd;
 
             /* Auto-register app windows for swap management.
-             * App tasks run at APP_TASK_PRIORITY (1) and have WF_BORDER. */
-            if ((style & WF_BORDER) &&
-                uxTaskPriorityGet(xTaskGetCurrentTaskHandle()) == 1) {
-                swap_register(hwnd, xTaskGetCurrentTaskHandle());
-                /* This new app becomes the foreground */
-                swap_switch_to(hwnd);
+             * App tasks run at APP_TASK_PRIORITY (1) and have WF_BORDER.
+             * Only register the FIRST window a task creates — child
+             * windows (dialogs, file dialogs) share the same task and
+             * must NOT be registered separately or they would suspend
+             * their own parent. */
+            {
+                TaskHandle_t caller = xTaskGetCurrentTaskHandle();
+                if ((style & WF_BORDER) &&
+                    uxTaskPriorityGet(caller) == 1 &&
+                    !swap_find_by_task(caller)) {
+                    swap_register(hwnd, caller);
+                    /* This new app becomes the foreground */
+                    swap_switch_to(hwnd);
+                }
             }
 
             /* New window is WF_DIRTY — it will paint itself */
@@ -409,13 +418,10 @@ void wm_invalidate(hwnd_t hwnd) {
      * them, but their task is frozen and paint handler must not run. */
     if (windows[hwnd - 1].flags & WF_SUSPENDED) return;
 
-    /* Only the focused window gets real-time updates.
-     * Background windows are completely frozen — apps that write
-     * directly to the framebuffer (ZX Spectrum, Solitaire) would
-     * cause flicker if their paint handlers ran while another
-     * window is on top.  They repaint when they regain focus
-     * (wm_set_focus marks them WF_DIRTY). */
-    if (hwnd != focus_hwnd) return;
+    /* Only the focused window gets real-time updates, UNLESS it is a
+     * background app (e.g. FrankAmp) which keeps running and needs its
+     * window repainted even when not focused. */
+    if (hwnd != focus_hwnd && !swap_is_background(hwnd)) return;
 
     windows[hwnd - 1].flags |= WF_DIRTY;
     wm_mark_dirty();
@@ -838,18 +844,17 @@ void wm_composite(void) {
                 bool br = point_in_dirty_window(bx1, by1);
 
                 if (tl && tr && bl && br) {
-                    /* If cursor moved, explicitly erase so partial-paint
-                     * handlers (e.g. Solitaire drag) don't leave cursor
-                     * ghosts at the old position.  If stationary, reset
-                     * keeps the cursor visible during paint (avoids
-                     * flicker on ZX Spectrum and similar full-paint apps). */
-                    if (cursor_moved)
-                        cursor_overlay_erase();
-                    else
-                        cursor_overlay_reset();
-                    cursor_mode = CUR_RESET_STAMP;
+                    /* Cursor fully inside dirty area — erase it so the
+                     * window paint can write clean pixels underneath. */
+                    cursor_overlay_erase();
+                    cursor_mode = CUR_ERASE_STAMP;
                 } else if (!tl && !tr && !bl && !br && !cursor_moved) {
                     cursor_mode = CUR_SKIP;
+                } else if (!cursor_moved) {
+                    /* Cursor partially overlaps dirty area — erase to
+                     * prevent ghost pixels from the old stamp. */
+                    cursor_overlay_erase();
+                    cursor_mode = CUR_ERASE_STAMP;
                 } else {
                     cursor_overlay_erase();
                     cursor_mode = CUR_ERASE_STAMP;
@@ -905,17 +910,6 @@ void wm_composite(void) {
      * animation (sunken state when start menu is open). */
     taskbar_draw();
 
-    /* Re-stamp cursor after window painting AND taskbar draw.
-     * Both can overwrite cursor pixels via direct FB writes.
-     * Placed after taskbar to prevent taskbar_draw() from
-     * overwriting a cursor stamped during the window phase. */
-    if (cursor_mode == CUR_RESET_STAMP) {
-        int16_t mx, my;
-        wm_get_cursor_pos(&mx, &my);
-        cursor_overlay_stamp(mx, my);
-        cursor_mode = CUR_SKIP;  /* already stamped */
-    }
-
     /* Overlay menus — drawn after all windows and taskbar (always
      * when open — cheap and prevents overwrite by window paint) */
     startmenu_draw();
@@ -923,6 +917,7 @@ void wm_composite(void) {
     menu_popup_draw();
     sysmenu_draw();
     taskbar_popup_draw();
+    alttab_draw();
 
     /* Stamp drag outline on visible buffer (before cursor) */
     {

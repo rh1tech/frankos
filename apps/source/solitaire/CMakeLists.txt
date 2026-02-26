@@ -60,15 +60,14 @@ target_compile_definitions(${PROJECT_NAME} PRIVATE
 pico_enable_stdio_uart(${PROJECT_NAME} 0)
 pico_enable_stdio_usb(${PROJECT_NAME} 0)
 
-set(ICON_ICO "${CMAKE_CURRENT_SOURCE_DIR}/../../../assets/icons/w95_29.ico")
-set(CONVERT_ICO_16 "${CMAKE_CURRENT_SOURCE_DIR}/../../../tools/convert_ico_16.py")
+set(ICON_RAW "${CMAKE_CURRENT_SOURCE_DIR}/solitaire_icon.raw")
+set(GEN_INF "${CMAKE_CURRENT_SOURCE_DIR}/gen_inf.py")
 
 add_custom_command(
     OUTPUT "${CMAKE_BINARY_DIR}/solitaire.inf"
-    COMMAND ${Python3_EXECUTABLE} "${CONVERT_ICO_16}"
-        --inf "Solitaire" "${ICON_ICO}"
+    COMMAND ${Python3_EXECUTABLE} "${GEN_INF}" "Solitaire" "${ICON_RAW}"
         "${CMAKE_BINARY_DIR}/solitaire.inf"
-    DEPENDS "${CONVERT_ICO_16}" "${ICON_ICO}"
+    DEPENDS "${GEN_INF}" "${ICON_RAW}"
     COMMENT "Generating solitaire.inf with embedded icon"
 )
 add_custom_target(solitaire_inf ALL

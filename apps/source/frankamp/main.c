@@ -75,6 +75,7 @@ static inline int fa_rand(void) {
 #define CMD_PREV       204
 #define CMD_SHUFFLE    205
 #define CMD_REPEAT     206
+#define CMD_ABOUT      300
 
 /* USB HID key codes */
 #define KEY_SPACE   0x2C
@@ -571,7 +572,7 @@ static void draw_icon_prev(int16_t x, int16_t y, int16_t w, int16_t h) {
     wd_vline(cx - 5, cy - 5, 11, COLOR_BLACK);
     /* Triangle pointing left */
     for (int i = 0; i < 6; i++)
-        wd_vline(cx + 4 - i, cy - i, i * 2 + 1, COLOR_BLACK);
+        wd_vline(cx - 4 + i, cy - i, i * 2 + 1, COLOR_BLACK);
 }
 
 static void draw_icon_play(int16_t x, int16_t y, int16_t w, int16_t h) {
@@ -595,7 +596,7 @@ static void draw_icon_next(int16_t x, int16_t y, int16_t w, int16_t h) {
     int16_t cx = x + w / 2, cy = y + h / 2;
     /* Triangle pointing right */
     for (int i = 0; i < 6; i++)
-        wd_vline(cx - 4 + i, cy - i, i * 2 + 1, COLOR_BLACK);
+        wd_vline(cx + 4 - i, cy - i, i * 2 + 1, COLOR_BLACK);
     /* Bar */
     wd_vline(cx + 5, cy - 5, 11, COLOR_BLACK);
     wd_vline(cx + 6, cy - 5, 11, COLOR_BLACK);
@@ -1036,6 +1037,13 @@ static bool main_event(hwnd_t hwnd, const window_event_t *ev) {
         if (cmd == CMD_PREV)    { play_prev(fa); wm_invalidate(hwnd); return true; }
         if (cmd == CMD_SHUFFLE) { fa->shuffle = !fa->shuffle; wm_invalidate(hwnd); return true; }
         if (cmd == CMD_REPEAT)  { fa->repeat = !fa->repeat; wm_invalidate(hwnd); return true; }
+        if (cmd == CMD_ABOUT) {
+            dialog_show(hwnd, "About FrankAmp",
+                        "FrankAmp\n\nFRANK OS v" FRANK_VERSION_STR
+                        " (c) 2026\nMikhail Matveev",
+                        DLG_ICON_INFO, DLG_BTN_OK);
+            return true;
+        }
 
         return false;
     }
@@ -1166,7 +1174,7 @@ static bool main_event(hwnd_t hwnd, const window_event_t *ev) {
 static void setup_menu(hwnd_t hwnd) {
     menu_bar_t bar;
     memset(&bar, 0, sizeof(bar));
-    bar.menu_count = 2;
+    bar.menu_count = 3;
 
     /* File menu */
     menu_def_t *file = &bar.menus[0];
@@ -1211,6 +1219,14 @@ static void setup_menu(hwnd_t hwnd) {
     strncpy(music->items[7].text, "Repeat", sizeof(music->items[7].text) - 1);
     music->items[7].command_id = CMD_REPEAT;
 
+    /* Help menu */
+    menu_def_t *help = &bar.menus[2];
+    strncpy(help->title, "Help", sizeof(help->title) - 1);
+    help->accel_key = 0x0B; /* HID 'H' */
+    help->item_count = 1;
+    strncpy(help->items[0].text, "About", sizeof(help->items[0].text) - 1);
+    help->items[0].command_id = CMD_ABOUT;
+
     menu_set(hwnd, &bar);
 }
 
@@ -1254,6 +1270,13 @@ uint32_t __app_flags(void) { return APPFLAG_BACKGROUND; }
 
 int main(int argc, char **argv) {
     (void)argc;
+
+    /* Single-instance guard — exit if already running */
+    for (hwnd_t h = 1; h <= WM_MAX_WINDOWS; h++) {
+        window_t *w = wm_get_window(h);
+        if (w && (w->flags & WF_ALIVE) && 0 == strncmp(w->title, "FrankAmp", 8))
+            return 0;
+    }
 
     app_task = xTaskGetCurrentTaskHandle();
     app_closing = false;
