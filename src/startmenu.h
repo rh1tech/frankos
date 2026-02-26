@@ -12,6 +12,9 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+/* Pre-scan /fos/ apps at boot (call once from compositor task) */
+void startmenu_init(void);
+
 /* Toggle start menu visibility */
 void startmenu_toggle(void);
 

@@ -15,6 +15,7 @@
 #include "window_draw.h"
 #include "window_theme.h"
 #include "display.h"
+#include "gfx.h"
 #include "font.h"
 #include "taskbar.h"
 #include "dialog.h"          /* DLG_RESULT_CANCEL */
@@ -23,6 +24,7 @@
 #include <stdio.h>
 #include "FreeRTOS.h"
 #include "task.h"
+#include "timers.h"
 
 /* Up-directory icon from Navigator (fn_icons.c) */
 extern const uint8_t fn_icon16_up[];
@@ -123,6 +125,18 @@ static bool     fd_up_pressed;  /* Up button press animation */
 static uint32_t fd_last_click_tick;
 static int16_t  fd_last_click_idx;
 
+/* Save mode state */
+static bool     fd_save_mode;
+static char     fd_filename[FD_NAME_LEN];   /* editable filename */
+static uint8_t  fd_fname_len;
+static uint8_t  fd_fname_cursor;
+static bool     fd_fname_focus;             /* true = filename field focused */
+static bool     fd_cursor_visible;
+static TimerHandle_t fd_blink_timer = NULL;
+
+/* Overwrite confirmation pending state */
+static bool     fd_overwrite_pending;
+
 /*==========================================================================
  * Extension matching (case-insensitive)
  *=========================================================================*/
@@ -214,6 +228,22 @@ static void fd_navigate(const char *name) {
             snprintf(fd_path + len, FD_PATH_MAX - len, "/%s", name);
     }
     fd_read_dir();
+    wm_invalidate(fd_hwnd);
+}
+
+/*==========================================================================
+ * Save mode cursor blink
+ *=========================================================================*/
+
+static void fd_blink_callback(TimerHandle_t xTimer) {
+    (void)xTimer;
+    fd_cursor_visible = !fd_cursor_visible;
+    wm_invalidate(fd_hwnd);
+}
+
+static void fd_blink_reset(void) {
+    fd_cursor_visible = true;
+    if (fd_blink_timer) xTimerReset(fd_blink_timer, 0);
     wm_invalidate(fd_hwnd);
 }
 
@@ -453,19 +483,48 @@ static void fd_paint(hwnd_t hwnd) {
     wd_text_ui(FD_PAD, FD_FNAME_Y + (FD_FIELD_H - FONT_UI_HEIGHT) / 2,
                "File name:", COLOR_BLACK, THEME_BUTTON_FACE);
     fd_draw_sunken(FD_FIELD_X, FD_FNAME_Y, FD_FIELD_W, FD_FIELD_H);
-    /* Show selected file name in field */
-    if (fd_count > 0 && fd_selected >= 0 && fd_selected < fd_count &&
-        !fd_is_dir[fd_selected]) {
+
+    if (fd_save_mode) {
+        /* Editable filename field */
         int fc = (FD_FIELD_W - 8) / FONT_UI_WIDTH;
         char fn[FD_NAME_LEN + 1];
-        strncpy(fn, fd_names[fd_selected], FD_NAME_LEN);
+        strncpy(fn, fd_filename, FD_NAME_LEN);
         fn[FD_NAME_LEN] = '\0';
         if ((int)strlen(fn) > fc) fn[fc] = '\0';
-        wd_text_ui(FD_FIELD_X + 4,
-                   FD_FNAME_Y + (FD_FIELD_H - FONT_UI_HEIGHT) / 2,
-                   fn, COLOR_BLACK, COLOR_WHITE);
+
+        /* Get screen coords for cursor drawing */
+        window_t *win = wm_get_window(fd_hwnd);
+        int txt_sx = 0, txt_sy = 0;
+        if (win) {
+            point_t co = theme_client_origin(&win->frame, win->flags);
+            txt_sx = co.x + FD_FIELD_X + 4;
+            txt_sy = co.y + FD_FNAME_Y + (FD_FIELD_H - FONT_UI_HEIGHT) / 2;
+        }
+        gfx_text_ui(txt_sx, txt_sy, fn, COLOR_BLACK, COLOR_WHITE);
+
+        /* Cursor */
+        if (fd_fname_focus && fd_cursor_visible && win) {
+            int cx = txt_sx + fd_fname_cursor * FONT_UI_WIDTH;
+            for (int row = 0; row < FONT_UI_HEIGHT; row++)
+                display_set_pixel(cx, txt_sy + row, COLOR_BLACK);
+        }
+    } else {
+        /* Read-only: show selected file name */
+        if (fd_count > 0 && fd_selected >= 0 && fd_selected < fd_count &&
+            !fd_is_dir[fd_selected]) {
+            int fc = (FD_FIELD_W - 8) / FONT_UI_WIDTH;
+            char fn[FD_NAME_LEN + 1];
+            strncpy(fn, fd_names[fd_selected], FD_NAME_LEN);
+            fn[FD_NAME_LEN] = '\0';
+            if ((int)strlen(fn) > fc) fn[fc] = '\0';
+            wd_text_ui(FD_FIELD_X + 4,
+                       FD_FNAME_Y + (FD_FIELD_H - FONT_UI_HEIGHT) / 2,
+                       fn, COLOR_BLACK, COLOR_WHITE);
+        }
     }
-    wd_button(FD_BTN_X, FD_FNAME_Y, FD_BTN_W, FD_BTN_H, "Open",
+
+    wd_button(FD_BTN_X, FD_FNAME_Y, FD_BTN_W, FD_BTN_H,
+              fd_save_mode ? "Save" : "Open",
               fd_btn_focus == 1, fd_btn_pressed == 0);
 
     /* === "Files of type:" row === */
@@ -492,6 +551,11 @@ static void fd_paint(hwnd_t hwnd) {
  *=========================================================================*/
 
 static void fd_close(uint16_t result) {
+    if (fd_blink_timer) {
+        xTimerStop(fd_blink_timer, 0);
+        xTimerDelete(fd_blink_timer, 0);
+        fd_blink_timer = NULL;
+    }
     wm_clear_modal();
     wm_destroy_window(fd_hwnd);
     fd_hwnd = HWND_NULL;
@@ -511,17 +575,49 @@ static void fd_close(uint16_t result) {
  *=========================================================================*/
 
 static void fd_select_current(void) {
-    if (fd_count == 0) return;
+    if (fd_save_mode) {
+        /* Save mode: use the filename field */
+        if (fd_filename[0] == '\0') return;
 
-    if (fd_is_dir[fd_selected]) {
-        fd_navigate(fd_names[fd_selected]);
-    } else {
+        /* If list has a selected directory, enter it */
+        if (fd_count > 0 && fd_is_dir[fd_selected] &&
+            fd_btn_focus == 0) {
+            fd_navigate(fd_names[fd_selected]);
+            return;
+        }
+
+        /* Build full path */
         if (fd_path[0] == '/' && fd_path[1] == '\0')
-            snprintf(fd_result, FD_PATH_MAX, "/%s", fd_names[fd_selected]);
+            snprintf(fd_result, FD_PATH_MAX, "/%s", fd_filename);
         else
-            snprintf(fd_result, FD_PATH_MAX, "%s/%s",
-                     fd_path, fd_names[fd_selected]);
-        fd_close(DLG_RESULT_FILE);
+            snprintf(fd_result, FD_PATH_MAX, "%s/%s", fd_path, fd_filename);
+
+        /* Check if file exists — show overwrite confirmation */
+        FILINFO fno;
+        if (f_stat(fd_result, &fno) == FR_OK) {
+            fd_overwrite_pending = true;
+            dialog_show(fd_hwnd, "Confirm Save As",
+                        "File already exists.\nDo you want to replace it?",
+                        DLG_ICON_WARNING,
+                        DLG_BTN_YES | DLG_BTN_NO);
+            return;
+        }
+
+        fd_close(DLG_RESULT_FILE_SAVE);
+    } else {
+        /* Open mode: existing behavior */
+        if (fd_count == 0) return;
+
+        if (fd_is_dir[fd_selected]) {
+            fd_navigate(fd_names[fd_selected]);
+        } else {
+            if (fd_path[0] == '/' && fd_path[1] == '\0')
+                snprintf(fd_result, FD_PATH_MAX, "/%s", fd_names[fd_selected]);
+            else
+                snprintf(fd_result, FD_PATH_MAX, "%s/%s",
+                         fd_path, fd_names[fd_selected]);
+            fd_close(DLG_RESULT_FILE);
+        }
     }
 }
 
@@ -562,7 +658,94 @@ static bool fd_event(hwnd_t hwnd, const window_event_t *event) {
         fd_close(DLG_RESULT_CANCEL);
         return true;
 
+    case WM_COMMAND:
+        /* Handle overwrite confirmation dialog result */
+        if (fd_overwrite_pending) {
+            fd_overwrite_pending = false;
+            if (event->command.id == DLG_RESULT_YES) {
+                fd_close(DLG_RESULT_FILE_SAVE);
+            }
+            /* DLG_RESULT_NO just returns to the save dialog */
+            return true;
+        }
+        return false;
+
+    case WM_CHAR:
+        /* Character input for save mode filename field */
+        if (fd_save_mode && fd_fname_focus) {
+            char ch = event->charev.ch;
+            if (ch >= 0x20 && ch < 0x7F && fd_fname_len < FD_NAME_LEN - 1) {
+                for (int i = fd_fname_len; i > fd_fname_cursor; i--)
+                    fd_filename[i] = fd_filename[i - 1];
+                fd_filename[fd_fname_cursor] = ch;
+                fd_fname_len++;
+                fd_fname_cursor++;
+                fd_filename[fd_fname_len] = '\0';
+                fd_blink_reset();
+            }
+            return true;
+        }
+        return false;
+
     case WM_KEYDOWN:
+        /* Save mode: filename field key handling */
+        if (fd_save_mode && fd_fname_focus) {
+            switch (event->key.scancode) {
+            case 0x29: /* Escape */
+                fd_close(DLG_RESULT_CANCEL);
+                return true;
+            case 0x28: /* Enter */
+                fd_select_current();
+                return true;
+            case 0x2A: /* Backspace */
+                if (fd_fname_cursor > 0) {
+                    for (int i = fd_fname_cursor - 1; i < fd_fname_len - 1; i++)
+                        fd_filename[i] = fd_filename[i + 1];
+                    fd_fname_len--;
+                    fd_fname_cursor--;
+                    fd_filename[fd_fname_len] = '\0';
+                    fd_blink_reset();
+                }
+                return true;
+            case 0x4C: /* Delete */
+                if (fd_fname_cursor < fd_fname_len) {
+                    for (int i = fd_fname_cursor; i < fd_fname_len - 1; i++)
+                        fd_filename[i] = fd_filename[i + 1];
+                    fd_fname_len--;
+                    fd_filename[fd_fname_len] = '\0';
+                    fd_blink_reset();
+                }
+                return true;
+            case 0x50: /* Left */
+                if (fd_fname_cursor > 0) {
+                    fd_fname_cursor--;
+                    fd_blink_reset();
+                }
+                return true;
+            case 0x4F: /* Right */
+                if (fd_fname_cursor < fd_fname_len) {
+                    fd_fname_cursor++;
+                    fd_blink_reset();
+                }
+                return true;
+            case 0x4A: /* Home */
+                fd_fname_cursor = 0;
+                fd_blink_reset();
+                return true;
+            case 0x4D: /* End */
+                fd_fname_cursor = fd_fname_len;
+                fd_blink_reset();
+                return true;
+            case 0x2B: /* Tab — cycle to list/buttons */
+                fd_fname_focus = false;
+                fd_btn_focus = 0;
+                wm_invalidate(fd_hwnd);
+                return true;
+            }
+            return false;
+        }
+
+        /* Standard key handling (list/button focused) */
         switch (event->key.scancode) {
         case 0x29: /* Escape */
             fd_close(DLG_RESULT_CANCEL);
@@ -600,8 +783,18 @@ static bool fd_event(hwnd_t hwnd, const window_event_t *event) {
             wm_invalidate(fd_hwnd);
             return true;
 
-        case 0x2B: /* Tab — cycle: list -> Open -> Cancel -> list */
-            fd_btn_focus = (fd_btn_focus + 1) % 3;
+        case 0x2B: /* Tab */
+            if (fd_save_mode) {
+                /* cycle: list(0) -> Save(1) -> Cancel(2) -> filename -> list */
+                if (fd_btn_focus == 2) {
+                    fd_fname_focus = true;
+                    fd_btn_focus = 0;
+                } else {
+                    fd_btn_focus = (fd_btn_focus + 1) % 3;
+                }
+            } else {
+                fd_btn_focus = (fd_btn_focus + 1) % 3;
+            }
             wm_invalidate(fd_hwnd);
             return true;
 
@@ -718,18 +911,42 @@ static bool fd_event(hwnd_t hwnd, const window_event_t *event) {
                     fd_last_click_tick = now;
                     fd_last_click_idx = clicked;
                     fd_btn_focus = 0;
+                    fd_fname_focus = false;
+                    /* Save mode: populate filename from selected file */
+                    if (fd_save_mode && !fd_is_dir[clicked]) {
+                        strncpy(fd_filename, fd_names[clicked], FD_NAME_LEN - 1);
+                        fd_filename[FD_NAME_LEN - 1] = '\0';
+                        fd_fname_len = (uint8_t)strlen(fd_filename);
+                        fd_fname_cursor = fd_fname_len;
+                    }
                     wm_invalidate(fd_hwnd);
                 }
             }
             return true;
         }
 
-        /* Hit-test: Open button */
+        /* Hit-test: Filename field (save mode) */
+        if (fd_save_mode &&
+            mx >= FD_FIELD_X + 2 && mx < FD_FIELD_X + FD_FIELD_W - 2 &&
+            my >= FD_FNAME_Y && my < FD_FNAME_Y + FD_FIELD_H) {
+            fd_fname_focus = true;
+            fd_btn_focus = 0;
+            int click_x = mx - FD_FIELD_X - 4;
+            int new_pos = click_x / FONT_UI_WIDTH;
+            if (new_pos < 0) new_pos = 0;
+            if (new_pos > fd_fname_len) new_pos = fd_fname_len;
+            fd_fname_cursor = new_pos;
+            fd_blink_reset();
+            return true;
+        }
+
+        /* Hit-test: Open/Save button */
         fd_btn_pressed = -1;
         if (mx >= FD_BTN_X && mx < FD_BTN_X + FD_BTN_W &&
             my >= FD_FNAME_Y && my < FD_FNAME_Y + FD_BTN_H) {
             fd_btn_pressed = 0;
             fd_btn_focus = 1;
+            fd_fname_focus = false;
             wm_invalidate(fd_hwnd);
             return true;
         }
@@ -794,11 +1011,14 @@ hwnd_t file_dialog_open(hwnd_t parent, const char *title,
     if (fd_hwnd != HWND_NULL) return HWND_NULL;
 
     fd_parent = parent;
+    fd_save_mode = false;
     fd_btn_focus = 0;
     fd_btn_pressed = -1;
     fd_up_pressed = false;
     fd_last_click_idx = -1;
     fd_last_click_tick = 0;
+    fd_fname_focus = false;
+    fd_overwrite_pending = false;
 
     if (initial_path && initial_path[0]) {
         strncpy(fd_path, initial_path, FD_PATH_MAX - 1);
@@ -843,4 +1063,81 @@ hwnd_t file_dialog_open(hwnd_t parent, const char *title,
 
 const char *file_dialog_get_path(void) {
     return fd_result;
+}
+
+hwnd_t file_dialog_save(hwnd_t parent, const char *title,
+                        const char *initial_path, const char *filter_ext,
+                        const char *initial_name) {
+    if (fd_hwnd != HWND_NULL) return HWND_NULL;
+
+    fd_parent = parent;
+    fd_save_mode = true;
+    fd_btn_focus = 0;
+    fd_btn_pressed = -1;
+    fd_up_pressed = false;
+    fd_last_click_idx = -1;
+    fd_last_click_tick = 0;
+    fd_overwrite_pending = false;
+
+    /* Initialize filename field */
+    fd_fname_focus = true;  /* Start with filename field focused */
+    if (initial_name && initial_name[0]) {
+        strncpy(fd_filename, initial_name, FD_NAME_LEN - 1);
+        fd_filename[FD_NAME_LEN - 1] = '\0';
+        fd_fname_len = (uint8_t)strlen(fd_filename);
+        fd_fname_cursor = fd_fname_len;
+    } else {
+        fd_filename[0] = '\0';
+        fd_fname_len = 0;
+        fd_fname_cursor = 0;
+    }
+
+    if (initial_path && initial_path[0]) {
+        strncpy(fd_path, initial_path, FD_PATH_MAX - 1);
+        fd_path[FD_PATH_MAX - 1] = '\0';
+    } else {
+        fd_path[0] = '/';
+        fd_path[1] = '\0';
+    }
+
+    if (filter_ext && filter_ext[0]) {
+        strncpy(fd_filter, filter_ext, sizeof(fd_filter) - 1);
+        fd_filter[sizeof(fd_filter) - 1] = '\0';
+    } else {
+        fd_filter[0] = '\0';
+    }
+
+    fd_read_dir();
+
+    int outer_w = FD_CLIENT_W + 2 * THEME_BORDER_WIDTH;
+    int outer_h = FD_CLIENT_H + THEME_TITLE_HEIGHT + 2 * THEME_BORDER_WIDTH;
+
+    int work_h = taskbar_work_area_height();
+    int x = (DISPLAY_WIDTH - outer_w) / 2;
+    int y = (work_h - outer_h) / 2;
+    if (x < 0) x = 0;
+    if (y < 0) y = 0;
+
+    fd_hwnd = wm_create_window((int16_t)x, (int16_t)y,
+                                (int16_t)outer_w, (int16_t)outer_h,
+                                title, WSTYLE_DIALOG,
+                                fd_event, fd_paint);
+    if (fd_hwnd == HWND_NULL) {
+        fd_save_mode = false;
+        return HWND_NULL;
+    }
+
+    window_t *win = wm_get_window(fd_hwnd);
+    if (win) win->bg_color = THEME_BUTTON_FACE;
+
+    wm_set_focus(fd_hwnd);
+    wm_set_modal(fd_hwnd);
+
+    /* Start cursor blink timer for filename field */
+    fd_cursor_visible = true;
+    fd_blink_timer = xTimerCreate("fdblink", pdMS_TO_TICKS(500),
+                                    pdTRUE, NULL, fd_blink_callback);
+    if (fd_blink_timer) xTimerStart(fd_blink_timer, 0);
+
+    return fd_hwnd;
 }

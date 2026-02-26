@@ -243,6 +243,12 @@ void wm_handle_mouse_input(uint8_t type, int16_t x, int16_t y, uint8_t buttons);
  * Returns true if a move or resize is in progress, fills outline rect. */
 bool wm_get_drag_outline(rect_t *outline);
 
+/* Drag outline overlay — XOR drawn directly on show buffer.
+ * Used by the compositor to re-stamp after buffer swap. */
+void drag_overlay_stamp(const rect_t *r);
+void drag_overlay_erase(void);
+void drag_overlay_reset(void);
+
 /*==========================================================================
  * Input state queries
  *=========================================================================*/

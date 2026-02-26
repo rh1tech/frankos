@@ -11,6 +11,7 @@
 #include "window_event.h"
 #include "window_theme.h"
 #include "startmenu.h"
+#include "swap.h"
 #include "gfx.h"
 #include "font.h"
 #include "display.h"
@@ -34,6 +35,7 @@ extern const uint8_t default_icon_16x16[256];
  *=========================================================================*/
 
 static bool taskbar_ready = false;
+static bool taskbar_dirty = true;  /* starts dirty for first frame */
 
 /* Compute the button width based on how many task buttons are visible */
 static int taskbar_btn_width(void) {
@@ -89,11 +91,21 @@ int16_t taskbar_work_area_height(void) {
 }
 
 void taskbar_invalidate(void) {
+    taskbar_dirty = true;
     wm_mark_dirty();
 }
 
+void taskbar_force_dirty(void) {
+    taskbar_dirty = true;
+}
+
+bool taskbar_needs_redraw(void) {
+    return taskbar_dirty;
+}
+
 void taskbar_draw(void) {
-    if (!taskbar_ready) return;
+    if (!taskbar_ready || !taskbar_dirty) return;
+    taskbar_dirty = false;
 
     int y = TASKBAR_Y;
 
@@ -142,13 +154,16 @@ void taskbar_draw(void) {
         const uint8_t *icon = win->icon ? win->icon : default_icon_16x16;
         gfx_draw_icon_16(btn_x + 4 + offset, BUTTON_Y + 3 + offset, icon);
 
-        /* Truncated title text (shifted right for icon) */
+        /* Truncated title text (shifted right for icon).
+         * Suspended apps show title in dark gray to indicate they're inactive. */
         int text_x = btn_x + 22 + offset;
         int text_y = BUTTON_Y + (BUTTON_HEIGHT - FONT_UI_HEIGHT) / 2 + offset;
         int text_max_w = btn_w - 26;
         if (text_max_w > 0) {
+            uint8_t text_color = (win->flags & WF_SUSPENDED) ?
+                                  COLOR_DARK_GRAY : COLOR_BLACK;
             gfx_text_ui_clipped(text_x, text_y, win->title,
-                                COLOR_BLACK, THEME_BUTTON_FACE,
+                                text_color, THEME_BUTTON_FACE,
                                 btn_x + 2, BUTTON_Y, btn_w - 4, BUTTON_HEIGHT);
         }
 
@@ -163,7 +178,6 @@ bool taskbar_mouse_click(int16_t x, int16_t y) {
     if (x >= 2 && x < 2 + TASKBAR_START_W &&
         y >= BUTTON_Y && y < BUTTON_Y + BUTTON_HEIGHT) {
         startmenu_toggle();
-        wm_mark_dirty();
         return true;
     }
 
@@ -184,6 +198,7 @@ bool taskbar_mouse_click(int16_t x, int16_t y) {
             if (win->state == WS_MINIMIZED) {
                 wm_restore_window(hwnd);
             }
+            swap_switch_to(hwnd);
             wm_set_focus(hwnd);
             wm_mark_dirty();
             return true;
@@ -285,13 +300,17 @@ static void tb_popup_execute(uint8_t id) {
     case TB_ID_MINIMIZE:
         wm_minimize_window(hwnd);
         break;
-    case TB_ID_CLOSE: {
-        window_event_t ev;
-        memset(&ev, 0, sizeof(ev));
-        ev.type = WM_CLOSE;
-        wm_post_event(hwnd, &ev);
+    case TB_ID_CLOSE:
+        if (swap_is_suspended(hwnd)) {
+            /* Suspended app can't process WM_CLOSE — force-close it */
+            swap_force_close(hwnd);
+        } else {
+            window_event_t ev;
+            memset(&ev, 0, sizeof(ev));
+            ev.type = WM_CLOSE;
+            wm_post_event(hwnd, &ev);
+        }
         break;
-    }
     }
     wm_mark_dirty();
 }
@@ -339,15 +358,18 @@ bool taskbar_popup_mouse(uint8_t type, int16_t x, int16_t y) {
         y >= tb_popup_y && y < tb_popup_y + menu_h) {
         if (type == WM_MOUSEMOVE || type == WM_LBUTTONDOWN) {
             int iy = tb_popup_y + 2;
-            tb_popup_hover = -1;
+            int new_hover = -1;
             for (int i = 0; i < tb_item_count; i++) {
                 if (y >= iy && y < iy + TB_ITEM_HEIGHT) {
-                    tb_popup_hover = i;
+                    new_hover = i;
                     break;
                 }
                 iy += TB_ITEM_HEIGHT;
             }
-            wm_mark_dirty();
+            if (new_hover != tb_popup_hover) {
+                tb_popup_hover = new_hover;
+                wm_mark_dirty();
+            }
         }
         if (type == WM_LBUTTONUP && tb_popup_hover >= 0) {
             tb_popup_execute(tb_items[tb_popup_hover].id);

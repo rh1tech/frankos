@@ -188,26 +188,32 @@ static void compute_sub_rect(void) {
  * Public API
  *=========================================================================*/
 
+void startmenu_init(void) {
+    fos_scan();
+}
+
 void startmenu_toggle(void) {
     if (sm_open) {
         startmenu_close();
     } else {
-        fos_scan();  /* re-scan /fos/ each time menu opens */
         sm_open = true;
         sm_hover = -1;
         sub_open = false;
         sub_hover = -1;
         compute_menu_rect();
-        wm_mark_dirty();
+        taskbar_invalidate();  /* redraw Start button in sunken state */
     }
 }
 
 void startmenu_close(void) {
+    if (!sm_open) return;   /* already closed — avoid redundant repaint */
     sm_open = false;
     sub_open = false;
     sm_hover = -1;
     sub_hover = -1;
-    wm_mark_dirty();
+    /* Force full repaint to guarantee stale menu pixels are cleared,
+     * even if the popup-close transition detector misses the change. */
+    wm_force_full_repaint();
 }
 
 bool startmenu_is_open(void) {
@@ -445,15 +451,18 @@ bool startmenu_mouse(uint8_t type, int16_t x, int16_t y) {
         int sub_count = fos_app_count + 2;
         if (type == WM_MOUSEMOVE || type == WM_LBUTTONDOWN) {
             int iy = sub_y + 2;
-            sub_hover = -1;
+            int new_sub = -1;
             for (int i = 0; i < sub_count; i++) {
                 if (y >= iy && y < iy + SM_ITEM_HEIGHT) {
-                    sub_hover = i;
+                    new_sub = i;
                     break;
                 }
                 iy += SM_ITEM_HEIGHT;
             }
-            wm_mark_dirty();
+            if (new_sub != sub_hover) {
+                sub_hover = new_sub;
+                wm_mark_dirty();
+            }
         }
         if (type == WM_LBUTTONUP && sub_hover >= 0) {
             execute_sub_item(sub_hover);
@@ -477,14 +486,16 @@ bool startmenu_mouse(uint8_t type, int16_t x, int16_t y) {
             }
             if (new_hover != sm_hover) {
                 sm_hover = new_hover;
-                /* Open/close submenu based on hover (only Programs has content) */
+                /* Open submenu when hovering Programs.  When the submenu
+                 * is already open, keep it visible while the cursor moves
+                 * over other items — prevents the submenu from closing
+                 * during diagonal mouse movement toward it. */
                 if (sm_hover == 0 && sm_items[sm_hover].has_submenu) {
-                    sub_open = true;
-                    sub_hover = -1;
-                    compute_sub_rect();
-                } else {
-                    sub_open = false;
-                    sub_hover = -1;
+                    if (!sub_open) {
+                        sub_open = true;
+                        sub_hover = -1;
+                        compute_sub_rect();
+                    }
                 }
                 wm_mark_dirty();
             }
@@ -497,10 +508,12 @@ bool startmenu_mouse(uint8_t type, int16_t x, int16_t y) {
         return true;
     }
 
-    /* Click outside — close */
+    /* Click outside — close.
+     * If the click is on the taskbar (Start button), consume it so
+     * taskbar_mouse_click doesn't immediately reopen the menu. */
     if (type == WM_LBUTTONDOWN) {
         startmenu_close();
-        return false; /* let click propagate */
+        return (y >= TASKBAR_Y);
     }
 
     return false;

@@ -59,6 +59,12 @@ typedef struct { int16_t x, y; } point_t;
 #define COLOR_WHITE         15
 
 /* ========================================================================
+ * Application flags (returned by __app_flags export)
+ * ======================================================================== */
+
+#define APPFLAG_BACKGROUND  (1u << 0)   /* app keeps running when not focused */
+
+/* ========================================================================
  * Window handle
  * ======================================================================== */
 
@@ -77,8 +83,9 @@ typedef uint8_t hwnd_t;
 #define WF_RESIZABLE (1u << 4)
 #define WF_MOVABLE   (1u << 5)
 #define WF_BORDER    (1u << 6)
-#define WF_DIRTY     (1u << 7)
-#define WF_MENUBAR   (1u << 8)
+#define WF_DIRTY       (1u << 7)
+#define WF_MENUBAR     (1u << 8)
+#define WF_FRAME_DIRTY (1u << 9)  /* decorations need repaint */
 
 /* ========================================================================
  * Window style presets
@@ -212,6 +219,10 @@ typedef struct {
 #define DLG_RESULT_NO       0xFF04
 #define DLG_RESULT_INPUT    0xFF10
 #define DLG_RESULT_FILE     0xFF20
+#define DLG_RESULT_FILE_SAVE  0xFF21
+#define DLG_RESULT_FIND_NEXT  0xFF31
+#define DLG_RESULT_REPLACE    0xFF32
+#define DLG_RESULT_REPLACE_ALL 0xFF33
 
 /* ========================================================================
  * Theme constants
@@ -508,6 +519,17 @@ static inline const char *file_dialog_get_path(void) {
     return ((fn_t)_sys_table_ptrs[440])();
 }
 
+/* 475: file_dialog_save */
+static inline hwnd_t file_dialog_save(hwnd_t parent, const char *title,
+                                        const char *initial_path,
+                                        const char *filter_ext,
+                                        const char *initial_name) {
+    typedef hwnd_t (*fn_t)(hwnd_t, const char*, const char*, const char*,
+                           const char*);
+    return ((fn_t)_sys_table_ptrs[475])(parent, title, initial_path,
+                                         filter_ext, initial_name);
+}
+
 /* 441: wd_button — standard Win95-style push button */
 static inline void wd_button(int16_t x, int16_t y, int16_t w, int16_t h,
                               const char *label, bool focused, bool pressed) {
@@ -523,6 +545,255 @@ static inline void wd_button(int16_t x, int16_t y, int16_t w, int16_t h,
 static inline uint8_t *wd_fb_ptr(int16_t cx, int16_t cy, int16_t *stride) {
     typedef uint8_t *(*fn_t)(int16_t, int16_t, int16_t*);
     return ((fn_t)_sys_table_ptrs[442])(cx, cy, stride);
+}
+
+/* ========================================================================
+ * Clipboard API (indices 451–454)
+ * ======================================================================== */
+
+/* 451: clipboard_set_text */
+static inline bool clipboard_set_text(const char *text, uint16_t len) {
+    typedef bool (*fn_t)(const char*, uint16_t);
+    return ((fn_t)_sys_table_ptrs[451])(text, len);
+}
+
+/* 452: clipboard_get_text */
+static inline const char *clipboard_get_text(void) {
+    typedef const char *(*fn_t)(void);
+    return ((fn_t)_sys_table_ptrs[452])();
+}
+
+/* 453: clipboard_get_length */
+static inline uint16_t clipboard_get_length(void) {
+    typedef uint16_t (*fn_t)(void);
+    return ((fn_t)_sys_table_ptrs[453])();
+}
+
+/* 454: clipboard_clear */
+static inline void clipboard_clear(void) {
+    typedef void (*fn_t)(void);
+    ((fn_t)_sys_table_ptrs[454])();
+}
+
+/* ========================================================================
+ * Scrollbar control (indices 455–459)
+ * ======================================================================== */
+
+#define SCROLLBAR_WIDTH  16
+
+typedef struct {
+    int16_t  x, y, w, h;
+    bool     horizontal;
+    bool     visible;
+    int32_t  range;
+    int32_t  page;
+    int32_t  pos;
+    bool     dragging;
+    int16_t  drag_offset;
+} scrollbar_t;
+
+/* 455: scrollbar_init */
+static inline void scrollbar_init(scrollbar_t *sb, bool horizontal) {
+    typedef void (*fn_t)(scrollbar_t*, bool);
+    ((fn_t)_sys_table_ptrs[455])(sb, horizontal);
+}
+
+/* 456: scrollbar_set_range */
+static inline void scrollbar_set_range(scrollbar_t *sb, int32_t range,
+                                         int32_t page) {
+    typedef void (*fn_t)(scrollbar_t*, int32_t, int32_t);
+    ((fn_t)_sys_table_ptrs[456])(sb, range, page);
+}
+
+/* 457: scrollbar_set_pos */
+static inline void scrollbar_set_pos(scrollbar_t *sb, int32_t pos) {
+    typedef void (*fn_t)(scrollbar_t*, int32_t);
+    ((fn_t)_sys_table_ptrs[457])(sb, pos);
+}
+
+/* 458: scrollbar_paint */
+static inline void scrollbar_paint(scrollbar_t *sb) {
+    typedef void (*fn_t)(scrollbar_t*);
+    ((fn_t)_sys_table_ptrs[458])(sb);
+}
+
+/* 459: scrollbar_event */
+static inline bool scrollbar_event(scrollbar_t *sb,
+                                     const window_event_t *event,
+                                     int32_t *new_pos) {
+    typedef bool (*fn_t)(scrollbar_t*, const window_event_t*, int32_t*);
+    return ((fn_t)_sys_table_ptrs[459])(sb, event, new_pos);
+}
+
+/* ========================================================================
+ * Textarea control (indices 460–474)
+ * ======================================================================== */
+
+#define TEXTAREA_MAX_SIZE  32768
+
+typedef struct {
+    char    *buf;
+    int32_t  buf_size;
+    int32_t  len;
+    int32_t  cursor;
+    int32_t  sel_anchor;
+    bool     cursor_visible;
+    int16_t  rect_x, rect_y;
+    int16_t  rect_w, rect_h;
+    int32_t  scroll_x;
+    int32_t  scroll_y;
+    scrollbar_t  vscroll;
+    scrollbar_t  hscroll;
+    hwnd_t   hwnd;
+    int32_t  total_lines;
+    int32_t  max_line_width;
+} textarea_t;
+
+/* 460: textarea_init */
+static inline void textarea_init(textarea_t *ta, char *buf, int32_t buf_size,
+                                   hwnd_t hwnd) {
+    typedef void (*fn_t)(textarea_t*, char*, int32_t, hwnd_t);
+    ((fn_t)_sys_table_ptrs[460])(ta, buf, buf_size, hwnd);
+}
+
+/* 461: textarea_set_text */
+static inline void textarea_set_text(textarea_t *ta, const char *text,
+                                       int32_t len) {
+    typedef void (*fn_t)(textarea_t*, const char*, int32_t);
+    ((fn_t)_sys_table_ptrs[461])(ta, text, len);
+}
+
+/* 462: textarea_get_text */
+static inline const char *textarea_get_text(textarea_t *ta) {
+    typedef const char *(*fn_t)(textarea_t*);
+    return ((fn_t)_sys_table_ptrs[462])(ta);
+}
+
+/* 463: textarea_get_length */
+static inline int32_t textarea_get_length(textarea_t *ta) {
+    typedef int32_t (*fn_t)(textarea_t*);
+    return ((fn_t)_sys_table_ptrs[463])(ta);
+}
+
+/* 464: textarea_set_rect */
+static inline void textarea_set_rect(textarea_t *ta, int16_t x, int16_t y,
+                                       int16_t w, int16_t h) {
+    typedef void (*fn_t)(textarea_t*, int16_t, int16_t, int16_t, int16_t);
+    ((fn_t)_sys_table_ptrs[464])(ta, x, y, w, h);
+}
+
+/* 465: textarea_paint */
+static inline void textarea_paint(textarea_t *ta) {
+    typedef void (*fn_t)(textarea_t*);
+    ((fn_t)_sys_table_ptrs[465])(ta);
+}
+
+/* 466: textarea_event */
+static inline bool textarea_event(textarea_t *ta,
+                                    const window_event_t *event) {
+    typedef bool (*fn_t)(textarea_t*, const window_event_t*);
+    return ((fn_t)_sys_table_ptrs[466])(ta, event);
+}
+
+/* 467: textarea_cut */
+static inline void textarea_cut(textarea_t *ta) {
+    typedef void (*fn_t)(textarea_t*);
+    ((fn_t)_sys_table_ptrs[467])(ta);
+}
+
+/* 468: textarea_copy */
+static inline void textarea_copy(textarea_t *ta) {
+    typedef void (*fn_t)(textarea_t*);
+    ((fn_t)_sys_table_ptrs[468])(ta);
+}
+
+/* 469: textarea_paste */
+static inline void textarea_paste(textarea_t *ta) {
+    typedef void (*fn_t)(textarea_t*);
+    ((fn_t)_sys_table_ptrs[469])(ta);
+}
+
+/* 470: textarea_select_all */
+static inline void textarea_select_all(textarea_t *ta) {
+    typedef void (*fn_t)(textarea_t*);
+    ((fn_t)_sys_table_ptrs[470])(ta);
+}
+
+/* 471: textarea_find */
+static inline bool textarea_find(textarea_t *ta, const char *needle,
+                                   bool case_sensitive, bool forward) {
+    typedef bool (*fn_t)(textarea_t*, const char*, bool, bool);
+    return ((fn_t)_sys_table_ptrs[471])(ta, needle, case_sensitive, forward);
+}
+
+/* 472: textarea_replace */
+static inline bool textarea_replace(textarea_t *ta, const char *needle,
+                                      const char *replacement,
+                                      bool case_sensitive) {
+    typedef bool (*fn_t)(textarea_t*, const char*, const char*, bool);
+    return ((fn_t)_sys_table_ptrs[472])(ta, needle, replacement, case_sensitive);
+}
+
+/* 473: textarea_replace_all */
+static inline int textarea_replace_all(textarea_t *ta, const char *needle,
+                                         const char *replacement,
+                                         bool case_sensitive) {
+    typedef int (*fn_t)(textarea_t*, const char*, const char*, bool);
+    return ((fn_t)_sys_table_ptrs[473])(ta, needle, replacement, case_sensitive);
+}
+
+/* 474: textarea_blink */
+static inline void textarea_blink(textarea_t *ta) {
+    typedef void (*fn_t)(textarea_t*);
+    ((fn_t)_sys_table_ptrs[474])(ta);
+}
+
+/* ========================================================================
+ * Find/Replace dialog API (indices 476–481)
+ * ======================================================================== */
+
+/* 476: find_dialog_show */
+static inline hwnd_t find_dialog_show(hwnd_t parent) {
+    typedef hwnd_t (*fn_t)(hwnd_t);
+    return ((fn_t)_sys_table_ptrs[476])(parent);
+}
+
+/* 477: replace_dialog_show */
+static inline hwnd_t replace_dialog_show(hwnd_t parent) {
+    typedef hwnd_t (*fn_t)(hwnd_t);
+    return ((fn_t)_sys_table_ptrs[477])(parent);
+}
+
+/* 478: find_dialog_get_text */
+static inline const char *find_dialog_get_text(void) {
+    typedef const char *(*fn_t)(void);
+    return ((fn_t)_sys_table_ptrs[478])();
+}
+
+/* 479: find_dialog_get_replace_text */
+static inline const char *find_dialog_get_replace_text(void) {
+    typedef const char *(*fn_t)(void);
+    return ((fn_t)_sys_table_ptrs[479])();
+}
+
+/* 480: find_dialog_case_sensitive */
+static inline bool find_dialog_case_sensitive(void) {
+    typedef bool (*fn_t)(void);
+    return ((fn_t)_sys_table_ptrs[480])();
+}
+
+/* 481: find_dialog_close */
+static inline void find_dialog_close(void) {
+    typedef void (*fn_t)(void);
+    ((fn_t)_sys_table_ptrs[481])();
+}
+
+/* 482: wm_mark_dirty — trigger compositor loop without marking any
+ * window for repaint.  Useful for apps that do direct buffer writes
+ * and need the event loop to keep dispatching mouse events. */
+static inline void wm_mark_dirty(void) {
+    typedef void (*fn_t)(void);
+    ((fn_t)_sys_table_ptrs[482])();
 }
 
 #ifdef __cplusplus

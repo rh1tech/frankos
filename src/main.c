@@ -35,6 +35,7 @@
 #include "font.h"
 #include "disphstx.h"
 #include "psram.h"
+#include "swap.h"
 #include "sound.h"
 #include "startup_sound.h"
 #ifdef PSRAM_MAX_FREQ_MHZ
@@ -249,20 +250,29 @@ static void compositor_task(void *params) {
         /* End boot sequence: show taskbar and restore arrow cursor */
         if (boot_cursor_active && xTaskGetTickCount() >= boot_deadline) {
             boot_cursor_active = false;
+            swap_init();
+            startmenu_init();
             taskbar_init();
             cursor_set_type(CURSOR_ARROW);
             wm_mark_dirty();
         }
 
+        /* Process deferred swap resumes — an exiting app sets a flag,
+         * and we do the actual stack restore here (on our own stack). */
+        swap_process_deferred();
+
         /* Recomposite when input arrives OR when windows are
-         * invalidated (e.g. terminal output, cursor blink). */
-        if (g_video_dirty || wm_needs_composite()) {
-            g_video_dirty = false;
+         * invalidated (e.g. terminal output, cursor blink).
+         * Always drain both flags to avoid a stale-flag repeat. */
+        {
+            bool input   = g_video_dirty;
+            bool content = wm_needs_composite();
+            if (input || content) {
+                g_video_dirty = false;
 
-            wm_dispatch_events();
-            wm_composite();
-
-            display_wait_vsync();
+                wm_dispatch_events();
+                wm_composite();
+            }
         }
         vTaskDelay(1);
     }

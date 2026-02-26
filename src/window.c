@@ -18,7 +18,11 @@
 #include "taskbar.h"
 #include "startmenu.h"
 #include "sysmenu.h"
+#include "swap.h"
+#include "FreeRTOS.h"
+#include "task.h"
 #include <string.h>
+
 
 /*==========================================================================
  * Internal state
@@ -29,11 +33,24 @@ static hwnd_t    z_stack[WM_MAX_WINDOWS];      /* z-order: bottom to top */
 static uint8_t   z_count;                       /* number of entries in z_stack */
 static hwnd_t    focus_hwnd;                    /* currently focused window */
 
+/* Full-repaint flag: when true, the compositor clears the entire framebuffer
+ * before painting.  Set by structural changes (window create/destroy/move/etc).
+ * Content-only invalidations (app redraws) leave it false so the screen is
+ * repainted in-place without the full clear — eliminating the "flash" that
+ * the beam would otherwise catch on the single visible buffer. */
+static bool needs_full_repaint = true;
+
 /* Cascade counter for new window positioning */
 static uint8_t cascade_counter = 0;
 #define CASCADE_STEP_X  20
 #define CASCADE_STEP_Y  20
 #define CASCADE_MAX      8  /* wrap after 8 steps */
+
+/* Expose rect queue — desktop areas revealed by structural changes */
+#define EXPOSE_MAX 8
+static rect_t  expose_rects[EXPOSE_MAX];
+static uint8_t expose_count = 0;
+
 
 /* Per-window icon storage — copied here so icons survive fos_apps[] rescan */
 #define ICON16_SIZE 256
@@ -49,6 +66,42 @@ static const uint8_t *pending_icon = NULL;
 static inline bool valid_hwnd(hwnd_t h) {
     return h >= 1 && h <= WM_MAX_WINDOWS &&
            (windows[h - 1].flags & WF_ALIVE);
+}
+
+/* Queue a desktop area for clearing (structural change revealed it).
+ * Clips to screen bounds to prevent framebuffer wrap-around when
+ * windows are moved partially off screen. */
+static void wm_add_expose_rect(const rect_t *r) {
+    int16_t x0 = r->x < 0 ? 0 : r->x;
+    int16_t y0 = r->y < 0 ? 0 : r->y;
+    int16_t x1 = r->x + r->w;
+    int16_t y1 = r->y + r->h;
+    if (x1 > DISPLAY_WIDTH)  x1 = DISPLAY_WIDTH;
+    if (y1 > DISPLAY_HEIGHT) y1 = DISPLAY_HEIGHT;
+    int16_t cw = x1 - x0;
+    int16_t ch = y1 - y0;
+    if (cw <= 0 || ch <= 0) return;
+
+    rect_t clipped = { x0, y0, cw, ch };
+    if (expose_count < EXPOSE_MAX)
+        expose_rects[expose_count++] = clipped;
+    else
+        needs_full_repaint = true;  /* overflow fallback */
+}
+
+/* Rectangle overlap test */
+static inline bool rect_overlaps(const rect_t *a, const rect_t *b) {
+    return a->x < b->x + b->w && a->x + a->w > b->x &&
+           a->y < b->y + b->h && a->y + a->h > b->y;
+}
+
+/* Bounding box union of two rects */
+static inline rect_t rect_union(const rect_t *a, const rect_t *b) {
+    int16_t x0 = a->x < b->x ? a->x : b->x;
+    int16_t y0 = a->y < b->y ? a->y : b->y;
+    int16_t x1 = (a->x + a->w) > (b->x + b->w) ? (a->x + a->w) : (b->x + b->w);
+    int16_t y1 = (a->y + a->h) > (b->y + b->h) ? (a->y + a->h) : (b->y + b->h);
+    return (rect_t){ x0, y0, x1 - x0, y1 - y0 };
 }
 
 /*==========================================================================
@@ -72,7 +125,7 @@ hwnd_t wm_create_window(int16_t x, int16_t y, int16_t w, int16_t h,
         if (!(windows[i].flags & WF_ALIVE)) {
             window_t *win = &windows[i];
             memset(win, 0, sizeof(*win));
-            win->flags = WF_ALIVE | WF_VISIBLE | WF_DIRTY | (style & 0x178);
+            win->flags = WF_ALIVE | WF_VISIBLE | WF_DIRTY | WF_FRAME_DIRTY | (style & 0x178);
             win->state = WS_NORMAL;
             win->frame = (rect_t){ x, y, w, h };
             win->restore_rect = win->frame;
@@ -114,6 +167,16 @@ hwnd_t wm_create_window(int16_t x, int16_t y, int16_t w, int16_t h,
             win->z_order = z_count;
             z_stack[z_count++] = hwnd;
 
+            /* Auto-register app windows for swap management.
+             * App tasks run at APP_TASK_PRIORITY (1) and have WF_BORDER. */
+            if ((style & WF_BORDER) &&
+                uxTaskPriorityGet(xTaskGetCurrentTaskHandle()) == 1) {
+                swap_register(hwnd, xTaskGetCurrentTaskHandle());
+                /* This new app becomes the foreground */
+                swap_switch_to(hwnd);
+            }
+
+            /* New window is WF_DIRTY — it will paint itself */
             taskbar_invalidate();
             return hwnd;
         }
@@ -124,6 +187,9 @@ hwnd_t wm_create_window(int16_t x, int16_t y, int16_t w, int16_t h,
 void wm_destroy_window(hwnd_t hwnd) {
     if (!valid_hwnd(hwnd)) return;
     window_t *win = &windows[hwnd - 1];
+
+    /* Expose the area this window occupied */
+    wm_add_expose_rect(&win->frame);
 
     /* Remove from z-stack */
     for (uint8_t i = 0; i < z_count; i++) {
@@ -147,7 +213,7 @@ void wm_destroy_window(hwnd_t hwnd) {
         if (z_count > 0) {
             hwnd_t next = z_stack[z_count - 1];
             focus_hwnd = next;
-            windows[next - 1].flags |= WF_FOCUSED | WF_DIRTY;
+            windows[next - 1].flags |= WF_FOCUSED | WF_DIRTY | WF_FRAME_DIRTY;
         }
     }
 
@@ -157,62 +223,97 @@ void wm_destroy_window(hwnd_t hwnd) {
 
 void wm_show_window(hwnd_t hwnd) {
     if (!valid_hwnd(hwnd)) return;
-    windows[hwnd - 1].flags |= WF_VISIBLE | WF_DIRTY;
+    windows[hwnd - 1].flags |= WF_VISIBLE | WF_DIRTY | WF_FRAME_DIRTY;
 }
 
 void wm_hide_window(hwnd_t hwnd) {
     if (!valid_hwnd(hwnd)) return;
+    rect_t frame = windows[hwnd - 1].frame;
     windows[hwnd - 1].flags &= ~WF_VISIBLE;
+    wm_add_expose_rect(&frame);
 }
 
 void wm_minimize_window(hwnd_t hwnd) {
     if (!valid_hwnd(hwnd)) return;
+    rect_t frame = windows[hwnd - 1].frame;
     windows[hwnd - 1].state = WS_MINIMIZED;
     windows[hwnd - 1].flags &= ~WF_VISIBLE;
+    wm_add_expose_rect(&frame);
     taskbar_invalidate();
 }
 
 void wm_maximize_window(hwnd_t hwnd) {
     if (!valid_hwnd(hwnd)) return;
     window_t *win = &windows[hwnd - 1];
+    rect_t old_frame = win->frame;
     if (win->state == WS_NORMAL) {
         win->restore_rect = win->frame;
     }
     win->state = WS_MAXIMIZED;
     win->frame = (rect_t){ 0, 0, DISPLAY_WIDTH, taskbar_work_area_height() };
-    win->flags |= WF_DIRTY;
+    win->flags |= WF_DIRTY | WF_FRAME_DIRTY;
+    wm_add_expose_rect(&old_frame);
 }
 
 void wm_restore_window(hwnd_t hwnd) {
     if (!valid_hwnd(hwnd)) return;
     window_t *win = &windows[hwnd - 1];
+    rect_t old_frame = win->frame;
     if (win->state == WS_MAXIMIZED) {
         win->frame = win->restore_rect;
     }
     win->state = WS_NORMAL;
-    win->flags |= WF_VISIBLE | WF_DIRTY;
+    win->flags |= WF_VISIBLE | WF_DIRTY | WF_FRAME_DIRTY;
+    wm_add_expose_rect(&old_frame);
     taskbar_invalidate();
 }
 
 void wm_move_window(hwnd_t hwnd, int16_t x, int16_t y) {
     if (!valid_hwnd(hwnd)) return;
-    windows[hwnd - 1].frame.x = x;
-    windows[hwnd - 1].frame.y = y;
-    windows[hwnd - 1].flags |= WF_DIRTY;
+    window_t *win = &windows[hwnd - 1];
+
+    /* Clamp position: x >= 0 to prevent wd_fb_ptr wrap-around (apps
+     * using direct buffer writes don't handle negative origins).
+     * Right edge allows dragging partially off-screen but keeps 60px
+     * visible.  Title bar stays reachable vertically. */
+    if (x < 0) x = 0;
+    if (x > DISPLAY_WIDTH - 60)   x = DISPLAY_WIDTH - 60;
+    if (y < 0) y = 0;
+    int16_t max_y = taskbar_work_area_height() - THEME_TITLE_HEIGHT;
+    if (y > max_y) y = max_y;
+
+    rect_t old_frame = win->frame;
+    win->frame.x = x;
+    win->frame.y = y;
+    win->flags |= WF_DIRTY | WF_FRAME_DIRTY;
+    wm_add_expose_rect(&old_frame);
 }
 
 void wm_resize_window(hwnd_t hwnd, int16_t w, int16_t h) {
     if (!valid_hwnd(hwnd)) return;
+    rect_t old_frame = windows[hwnd - 1].frame;
     windows[hwnd - 1].frame.w = w;
     windows[hwnd - 1].frame.h = h;
-    windows[hwnd - 1].flags |= WF_DIRTY;
+    windows[hwnd - 1].flags |= WF_DIRTY | WF_FRAME_DIRTY;
+    wm_add_expose_rect(&old_frame);
 }
 
 void wm_set_window_rect(hwnd_t hwnd, int16_t x, int16_t y,
                          int16_t w, int16_t h) {
     if (!valid_hwnd(hwnd)) return;
+
+    /* Clamp position: x >= 0 to prevent wd_fb_ptr wrap-around.
+     * Keep at least 60px visible on right edge, title bar reachable. */
+    if (x < 0) x = 0;
+    if (x > DISPLAY_WIDTH - 60)   x = DISPLAY_WIDTH - 60;
+    if (y < 0) y = 0;
+    int16_t max_y = taskbar_work_area_height() - THEME_TITLE_HEIGHT;
+    if (y > max_y) y = max_y;
+
+    rect_t old_frame = windows[hwnd - 1].frame;
     windows[hwnd - 1].frame = (rect_t){ x, y, w, h };
-    windows[hwnd - 1].flags |= WF_DIRTY;
+    windows[hwnd - 1].flags |= WF_DIRTY | WF_FRAME_DIRTY;
+    wm_add_expose_rect(&old_frame);
 }
 
 void wm_set_focus(hwnd_t hwnd) {
@@ -222,17 +323,17 @@ void wm_set_focus(hwnd_t hwnd) {
     hwnd_t modal = wm_get_modal();
     if (modal != HWND_NULL && hwnd != modal) return;
 
-    /* Remove focus from old window */
+    /* Remove focus from old window — title bar changes color */
     if (valid_hwnd(focus_hwnd)) {
         windows[focus_hwnd - 1].flags &= ~WF_FOCUSED;
-        windows[focus_hwnd - 1].flags |= WF_DIRTY;
+        windows[focus_hwnd - 1].flags |= WF_DIRTY | WF_FRAME_DIRTY;
     }
 
     focus_hwnd = hwnd;
 
     /* Set focus on new window and raise to top of z-stack */
     if (valid_hwnd(hwnd)) {
-        windows[hwnd - 1].flags |= WF_FOCUSED | WF_DIRTY;
+        windows[hwnd - 1].flags |= WF_FOCUSED | WF_DIRTY | WF_FRAME_DIRTY;
 
         /* Move to top of z-stack */
         for (uint8_t i = 0; i < z_count; i++) {
@@ -264,12 +365,15 @@ void wm_cycle_focus(void) {
     /* Pick the bottom-most visible, non-minimized window and bring it
      * to the top.  Since wm_set_focus() raises the target to the top
      * of z_stack, repeated Alt-Tab naturally rotates through ALL
-     * windows:  [C,B,A] → focus C → [B,A,C] → focus B → [A,C,B] … */
+     * windows:  [C,B,A] → focus C → [B,A,C] → focus B → [A,C,B] …
+     *
+     * Suspended windows are included — Alt+Tab resumes them. */
     for (int i = 0; i < z_count; i++) {
         hwnd_t h = z_stack[i];
         if (h != focus_hwnd && valid_hwnd(h) &&
-            (windows[h - 1].flags & WF_VISIBLE) &&
+            (windows[h - 1].flags & (WF_VISIBLE | WF_SUSPENDED)) &&
             windows[h - 1].state != WS_MINIMIZED) {
+            swap_switch_to(h);
             wm_set_focus(h);
             return;
         }
@@ -300,7 +404,25 @@ window_t *wm_get_window(hwnd_t hwnd) {
 
 void wm_invalidate(hwnd_t hwnd) {
     if (!valid_hwnd(hwnd)) return;
+
+    /* Reject suspended windows — timer callbacks may try to invalidate
+     * them, but their task is frozen and paint handler must not run. */
+    if (windows[hwnd - 1].flags & WF_SUSPENDED) return;
+
+    /* Only the focused window gets real-time updates.
+     * Background windows are completely frozen — apps that write
+     * directly to the framebuffer (ZX Spectrum, Solitaire) would
+     * cause flicker if their paint handlers ran while another
+     * window is on top.  They repaint when they regain focus
+     * (wm_set_focus marks them WF_DIRTY). */
+    if (hwnd != focus_hwnd) return;
+
     windows[hwnd - 1].flags |= WF_DIRTY;
+    wm_mark_dirty();
+}
+
+void wm_force_full_repaint(void) {
+    needs_full_repaint = true;
     wm_mark_dirty();
 }
 
@@ -309,7 +431,7 @@ void wm_set_title(hwnd_t hwnd, const char *title) {
     strncpy(windows[hwnd - 1].title, title,
             sizeof(windows[hwnd - 1].title) - 1);
     windows[hwnd - 1].title[sizeof(windows[hwnd - 1].title) - 1] = '\0';
-    windows[hwnd - 1].flags |= WF_DIRTY;
+    windows[hwnd - 1].flags |= WF_DIRTY | WF_FRAME_DIRTY;
 }
 
 void wm_set_pending_icon(const uint8_t *icon_data) {
@@ -551,57 +673,270 @@ static void draw_window_decorations(hwnd_t hwnd, window_t *win) {
  * Compositor
  *=========================================================================*/
 
+/* Check if a point lies inside a region that WILL be repainted this frame.
+ * For windows with WF_FRAME_DIRTY the full frame is repainted.
+ * For content-only updates (WF_DIRTY alone) only the client area is
+ * repainted — the title bar / border area is NOT touched, so the
+ * cursor save-under must be preserved there. */
+static bool point_in_dirty_window(int16_t px, int16_t py) {
+    if (taskbar_needs_redraw() && py >= taskbar_work_area_height())
+        return true;
+    for (uint8_t i = 0; i < z_count; i++) {
+        window_t *w = &windows[z_stack[i] - 1];
+        if (!(w->flags & WF_VISIBLE) || !(w->flags & WF_DIRTY)) continue;
+
+        if (w->flags & WF_FRAME_DIRTY) {
+            /* Full frame repaint — check entire frame */
+            if (px >= w->frame.x && px < w->frame.x + w->frame.w &&
+                py >= w->frame.y && py < w->frame.y + w->frame.h)
+                return true;
+        } else if (w->flags & WF_BORDER) {
+            /* Content-only — only client area will be repainted */
+            point_t co = theme_client_origin(&w->frame, w->flags);
+            rect_t  cr = theme_client_rect(&w->frame, w->flags);
+            if (px >= co.x && px < co.x + cr.w &&
+                py >= co.y && py < co.y + cr.h)
+                return true;
+        } else {
+            /* No border — frame IS client area */
+            if (px >= w->frame.x && px < w->frame.x + w->frame.w &&
+                py >= w->frame.y && py < w->frame.y + w->frame.h)
+                return true;
+        }
+    }
+    return false;
+}
+
 void wm_composite(void) {
     cursor_overlay_lock();
-    cursor_overlay_reset();   /* old show buffer becomes draw buffer — will be cleared */
 
-    /* Clear to desktop color */
-    display_clear(THEME_DESKTOP_COLOR);
+    /* Erase drag outline (fast XOR) before vsync wait */
+    drag_overlay_erase();
 
-    /* Paint visible windows back-to-front (NO cursor drawing) */
-    for (uint8_t i = 0; i < z_count; i++) {
-        hwnd_t hwnd = z_stack[i];
-        window_t *win = &windows[hwnd - 1];
-        if (!(win->flags & WF_VISIBLE)) continue;
-
-        draw_window_decorations(hwnd, win);
-
-        /* Call application paint handler */
-        if (win->paint_handler) {
-            wd_begin(hwnd);
-            win->paint_handler(hwnd);
-            wd_end();
-        }
-
-        win->flags &= ~WF_DIRTY;
+    /* Detect popup-overlay close: if any overlay was open last frame
+     * but is now closed, stale overlay pixels sit on bare desktop and
+     * need a full clear to remove them. */
+    bool has_popup = startmenu_is_open() || sysmenu_is_open() ||
+                     menu_is_open() || menu_popup_is_open() ||
+                     taskbar_popup_is_open();
+    {
+        static bool prev_had_popup = false;
+        if (prev_had_popup && !has_popup)
+            needs_full_repaint = true;
+        prev_had_popup = has_popup;
     }
 
-    /* Taskbar (compositor overlay, not a window) */
+    /* Wait for vblank — cursor stays visible during this wait,
+     * which may block up to one frame period. */
+    display_wait_vsync();
+
+    enum { CUR_ERASE_STAMP, CUR_RESET_STAMP, CUR_SKIP } cursor_mode;
+
+    if (needs_full_repaint) {
+        /*--- Fallback path: full repaint ---*/
+        cursor_overlay_erase();
+        display_clear(THEME_DESKTOP_COLOR);
+        needs_full_repaint = false;
+        expose_count = 0;
+
+        /* Mark ALL visible windows and taskbar dirty */
+        for (uint8_t i = 0; i < z_count; i++) {
+            window_t *w = &windows[z_stack[i] - 1];
+            if (w->flags & WF_VISIBLE)
+                w->flags |= WF_DIRTY | WF_FRAME_DIRTY;
+        }
+        taskbar_force_dirty();
+        cursor_mode = CUR_ERASE_STAMP;
+    } else if (has_popup) {
+        /*--- Popup-freeze path: overlays paint on top, so freeze
+         * window painting to prevent dirty windows from overwriting
+         * popup pixels mid-scanline on the single buffer.  When the
+         * popup closes, needs_full_repaint refreshes everything. ---*/
+        expose_count = 0;  /* deferred — full repaint on close */
+        cursor_overlay_erase();
+        cursor_mode = CUR_ERASE_STAMP;
+    } else {
+        /*--- Selective path ---*/
+        uint8_t saved_expose_count = expose_count;
+        expose_count = 0;
+
+        /* Phase 1: Mark overlapping windows dirty from expose rects
+         * (no framebuffer writes yet — cursor is still stamped) */
+        for (uint8_t e = 0; e < saved_expose_count; e++) {
+            rect_t *er = &expose_rects[e];
+
+            for (uint8_t i = 0; i < z_count; i++) {
+                window_t *w = &windows[z_stack[i] - 1];
+                if (!(w->flags & WF_VISIBLE)) continue;
+                if (rect_overlaps(er, &w->frame))
+                    w->flags |= WF_DIRTY | WF_FRAME_DIRTY;
+            }
+
+            /* Mark taskbar dirty if expose overlaps it */
+            rect_t tb = { 0, taskbar_work_area_height(),
+                          DISPLAY_WIDTH, TASKBAR_HEIGHT };
+            if (rect_overlaps(er, &tb))
+                taskbar_force_dirty();
+        }
+
+        /* Dirty propagation: if a dirty window (lower z) is painted,
+         * it overwrites pixels that a higher clean window should cover.
+         * Mark the higher window dirty only if it actually overlaps a
+         * dirty window below it — NOT just the bounding box of all
+         * dirty windows, which can cause false cascades. */
+        for (uint8_t i = 1; i < z_count; i++) {
+            window_t *w = &windows[z_stack[i] - 1];
+            if (!(w->flags & WF_VISIBLE) || (w->flags & WF_DIRTY)) continue;
+
+            for (uint8_t j = 0; j < i; j++) {
+                window_t *d = &windows[z_stack[j] - 1];
+                if (!(d->flags & WF_VISIBLE) || !(d->flags & WF_DIRTY)) continue;
+                if (rect_overlaps(&w->frame, &d->frame)) {
+                    w->flags |= WF_DIRTY | WF_FRAME_DIRTY;
+                    break;
+                }
+            }
+        }
+
+        /* Cursor mode selection */
+        if (saved_expose_count > 0) {
+            /* Structural change — always erase cursor before filling
+             * expose rects (same ordering as old full-clear path) */
+            cursor_overlay_erase();
+            cursor_mode = CUR_ERASE_STAMP;
+        } else {
+            /* Content-only path — test cursor against dirty windows */
+            int16_t sx, sy;
+            bool stamped = cursor_overlay_get_stamp(&sx, &sy);
+            int16_t mx, my;
+            wm_get_cursor_pos(&mx, &my);
+            bool cursor_moved = !stamped || mx != sx || my != sy;
+
+            bool any_dirty = false;
+            for (uint8_t i = 0; i < z_count && !any_dirty; i++) {
+                window_t *w = &windows[z_stack[i] - 1];
+                if ((w->flags & WF_VISIBLE) && (w->flags & WF_DIRTY))
+                    any_dirty = true;
+            }
+
+            if (!any_dirty && !taskbar_needs_redraw()) {
+                if (!cursor_moved) {
+                    cursor_mode = CUR_SKIP;
+                } else {
+                    cursor_overlay_erase();
+                    cursor_mode = CUR_ERASE_STAMP;
+                }
+            } else {
+                int16_t cx = stamped ? sx : mx;
+                int16_t cy = stamped ? sy : my;
+                int16_t bx0, by0, bx1, by1;
+                cursor_get_bounds(cx, cy, &bx0, &by0, &bx1, &by1);
+
+                bool tl = point_in_dirty_window(bx0, by0);
+                bool tr = point_in_dirty_window(bx1, by0);
+                bool bl = point_in_dirty_window(bx0, by1);
+                bool br = point_in_dirty_window(bx1, by1);
+
+                if (tl && tr && bl && br) {
+                    /* If cursor moved, explicitly erase so partial-paint
+                     * handlers (e.g. Solitaire drag) don't leave cursor
+                     * ghosts at the old position.  If stationary, reset
+                     * keeps the cursor visible during paint (avoids
+                     * flicker on ZX Spectrum and similar full-paint apps). */
+                    if (cursor_moved)
+                        cursor_overlay_erase();
+                    else
+                        cursor_overlay_reset();
+                    cursor_mode = CUR_RESET_STAMP;
+                } else if (!tl && !tr && !bl && !br && !cursor_moved) {
+                    cursor_mode = CUR_SKIP;
+                } else {
+                    cursor_overlay_erase();
+                    cursor_mode = CUR_ERASE_STAMP;
+                }
+            }
+        }
+
+        /* Phase 2: Fill expose rects with desktop color
+         * (cursor is now safely erased) */
+        for (uint8_t e = 0; e < saved_expose_count; e++) {
+            rect_t *er = &expose_rects[e];
+            gfx_fill_rect(er->x, er->y, er->w, er->h, THEME_DESKTOP_COLOR);
+        }
+    }
+
+    /* Paint dirty visible windows back-to-front.
+     * Skip when popups are open — their overlays sit on top and
+     * window paints would briefly overwrite them mid-scanline. */
+    if (!has_popup) {
+        for (uint8_t i = 0; i < z_count; i++) {
+            hwnd_t hwnd = z_stack[i];
+            window_t *win = &windows[hwnd - 1];
+            if (!(win->flags & WF_VISIBLE)) continue;
+            if (!(win->flags & WF_DIRTY)) continue;
+
+            /* Only repaint decorations (border, title bar, client bg)
+             * when the frame actually changed.  Content-only updates
+             * (wm_invalidate) skip this — avoids the full-frame fill
+             * that causes flicker on the single-buffer display. */
+            if (win->flags & WF_FRAME_DIRTY)
+                draw_window_decorations(hwnd, win);
+
+            if (win->paint_handler) {
+                /* Skip paint if client area extends past framebuffer
+                 * height — apps using wd_fb_ptr() write directly
+                 * with stride and may overflow the buffer. */
+                point_t co = theme_client_origin(&win->frame, win->flags);
+                rect_t  cr = theme_client_rect(&win->frame, win->flags);
+                if (co.y + cr.h <= FB_HEIGHT && co.x >= 0) {
+                    wd_begin(hwnd);
+                    win->paint_handler(hwnd);
+                    wd_end();
+                }
+            }
+
+            win->flags &= ~(WF_DIRTY | WF_FRAME_DIRTY);
+        }
+
+    }
+
+    /* Taskbar sits below all popups — always safe to draw.
+     * Drawing it outside the popup guard fixes Start button
+     * animation (sunken state when start menu is open). */
     taskbar_draw();
 
-    /* Overlay menus — drawn after all windows and taskbar */
+    /* Re-stamp cursor after window painting AND taskbar draw.
+     * Both can overwrite cursor pixels via direct FB writes.
+     * Placed after taskbar to prevent taskbar_draw() from
+     * overwriting a cursor stamped during the window phase. */
+    if (cursor_mode == CUR_RESET_STAMP) {
+        int16_t mx, my;
+        wm_get_cursor_pos(&mx, &my);
+        cursor_overlay_stamp(mx, my);
+        cursor_mode = CUR_SKIP;  /* already stamped */
+    }
+
+    /* Overlay menus — drawn after all windows and taskbar (always
+     * when open — cheap and prevents overwrite by window paint) */
     startmenu_draw();
     menu_draw_dropdown();
     menu_popup_draw();
     sysmenu_draw();
     taskbar_popup_draw();
 
-    /* Draw drag/resize outline */
+    /* Stamp drag outline on visible buffer (before cursor) */
     {
         rect_t outline;
-        if (wm_get_drag_outline(&outline)) {
-            gfx_rect(outline.x, outline.y, outline.w, outline.h, COLOR_BLACK);
-            gfx_rect(outline.x + 1, outline.y + 1,
-                      outline.w - 2, outline.h - 2, COLOR_WHITE);
-        }
+        if (wm_get_drag_outline(&outline))
+            drag_overlay_stamp(&outline);
     }
 
-    display_swap_buffers();
-
-    /* Stamp cursor on the new show buffer (save-under overlay) */
-    int16_t mx, my;
-    wm_get_cursor_pos(&mx, &my);
-    cursor_overlay_stamp(mx, my);
+    /* Stamp cursor — skip if already stamped above or untouched */
+    if (cursor_mode != CUR_SKIP) {
+        int16_t mx, my;
+        wm_get_cursor_pos(&mx, &my);
+        cursor_overlay_stamp(mx, my);
+    }
 
     cursor_overlay_unlock();
 }

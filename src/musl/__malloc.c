@@ -23,9 +23,11 @@ void* __new_ctx(void) {
 void* __malloc2(void* ctx, size_t sz) {
     if (!ctx || !((cmd_ctx_t*)ctx)->pallocs)
         return pvPortMalloc(sz);
-    void* res = pvPortMalloc(sz);
-    if (!res && psram_is_available())
-        res = psram_alloc(sz);
+    void* res = NULL;
+    if (psram_is_available())
+        res = psram_alloc(sz);            /* App: PSRAM first */
+    if (!res)
+        res = pvPortMalloc(sz);           /* App: SRAM fallback */
     if (!res) return NULL;
     list_push_back(((cmd_ctx_t*)ctx)->pallocs, res);
     return res;
@@ -34,11 +36,13 @@ void* __malloc2(void* ctx, size_t sz) {
 void* __calloc2(void* ctx, size_t n, size_t sz) {
     if (!ctx || !((cmd_ctx_t*)ctx)->pallocs)
         return pvPortCalloc(n, sz);
-    void* res = pvPortCalloc(n, sz);
-    if (!res && psram_is_available()) {
+    void* res = NULL;
+    if (psram_is_available()) {           /* App: PSRAM first */
         res = psram_alloc(n * sz);
         if (res) memset(res, 0, n * sz);
     }
+    if (!res)
+        res = pvPortCalloc(n, sz);        /* App: SRAM fallback */
     if (!res) return NULL;
     list_push_back(((cmd_ctx_t*)ctx)->pallocs, res);
     return res;
@@ -57,21 +61,23 @@ void* __realloc2(void* ctx, void* p, size_t sz) {
          * Read old block size from PSRAM allocator header. */
         size_t old_sz = *(size_t *)((uint8_t *)p - sizeof(size_t) * 2);
         size_t copy_sz = old_sz < sz ? old_sz : sz;
-        res = pvPortMalloc(sz);
-        if (!res) res = psram_alloc(sz);
+        res = psram_alloc(sz);            /* App: PSRAM first */
+        if (!res) res = pvPortMalloc(sz); /* App: SRAM fallback */
         if (!res) return NULL;
         memcpy(res, p, copy_sz);
         psram_free(p);
     } else {
-        res = pvPortRealloc(p, sz);
-        if (!res && psram_is_available()) {
-            /* pvPortRealloc failed — try PSRAM.
-             * Cannot easily get old block size from heap_4, so copy sz
-             * bytes (SRAM is fully readable, so no fault risk). */
+        /* Source is SRAM — try PSRAM first for the new block */
+        res = NULL;
+        if (psram_is_available())
             res = psram_alloc(sz);
-            if (!res) return NULL;
+        if (res) {
+            /* Cannot easily get old block size from heap_4, so copy sz
+             * bytes (SRAM is fully readable, so no fault risk). */
             memcpy(res, p, sz);
             vPortFree(p);
+        } else {
+            res = pvPortRealloc(p, sz);
         }
         if (!res) return NULL;
     }

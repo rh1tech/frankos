@@ -196,6 +196,21 @@ void cursor_draw(int16_t x, int16_t y) {
     }
 }
 
+void cursor_get_bounds(int16_t x, int16_t y,
+                       int16_t *x0, int16_t *y0,
+                       int16_t *x1, int16_t *y1) {
+    const cursor_def_t *c = &cursors[current_cursor];
+    int16_t lx = x - c->hotspot_x;
+    int16_t ly = y - c->hotspot_y;
+    if (lx < 0) lx = 0;
+    if (ly < 0) ly = 0;
+    int16_t rx = lx + c->w - 1;
+    int16_t ry = ly + c->h - 1;
+    if (rx >= DISPLAY_WIDTH)  rx = DISPLAY_WIDTH  - 1;
+    if (ry >= DISPLAY_HEIGHT) ry = DISPLAY_HEIGHT - 1;
+    *x0 = lx; *y0 = ly; *x1 = rx; *y1 = ry;
+}
+
 /*==========================================================================
  * Show-buffer cursor overlay with save-under
  *
@@ -308,6 +323,12 @@ void cursor_overlay_move(int16_t new_x, int16_t new_y) {
     cursor_overlay_stamp(new_x, new_y);
 }
 
+bool cursor_overlay_get_stamp(int16_t *x, int16_t *y) {
+    *x = overlay.stamp_x;
+    *y = overlay.stamp_y;
+    return overlay.valid;
+}
+
 void cursor_overlay_reset(void) {
     overlay.valid = false;
 }
@@ -318,4 +339,8 @@ void cursor_overlay_lock(void) {
 
 void cursor_overlay_unlock(void) {
     overlay.locked = false;
+}
+
+bool cursor_overlay_is_locked(void) {
+    return overlay.locked;
 }

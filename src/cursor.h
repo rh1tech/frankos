@@ -10,6 +10,7 @@
 #define CURSOR_H
 
 #include <stdint.h>
+#include <stdbool.h>
 
 /* Cursor types */
 typedef enum {
@@ -31,6 +32,17 @@ cursor_type_t cursor_get_type(void);
 /* Draw the current cursor at screen position (x, y). */
 void cursor_draw(int16_t x, int16_t y);
 
+/* Return the screen-space bounding box of the current cursor centred
+ * on hotspot position (x, y).  Clipped to [0, DISPLAY_WIDTH/HEIGHT). */
+void cursor_get_bounds(int16_t x, int16_t y,
+                       int16_t *x0, int16_t *y0,
+                       int16_t *x1, int16_t *y1);
+
+/* Return the overlay stamp position and validity.
+ * *x, *y are set to the position where the cursor was last drawn.
+ * Returns true if the overlay is currently stamped (valid save-under). */
+bool cursor_overlay_get_stamp(int16_t *x, int16_t *y);
+
 /* --- Show-buffer cursor overlay (save-under) --- */
 
 /* Save pixels under cursor from show buffer, draw cursor onto show buffer */
@@ -48,5 +60,6 @@ void cursor_overlay_reset(void);
 /* Prevent/allow input_task from modifying show buffer during compositor swap */
 void cursor_overlay_lock(void);
 void cursor_overlay_unlock(void);
+bool cursor_overlay_is_locked(void);
 
 #endif /* CURSOR_H */

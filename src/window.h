@@ -68,6 +68,8 @@ typedef uint8_t hwnd_t;
 #define WF_BORDER    (1u << 6)
 #define WF_DIRTY     (1u << 7)
 #define WF_MENUBAR   (1u << 8)
+#define WF_FRAME_DIRTY (1u << 9)  /* decorations need repaint */
+#define WF_SUSPENDED   (1u << 10) /* app task is suspended (swap) */
 
 /*==========================================================================
  * Window state
@@ -182,7 +184,10 @@ void wm_set_pending_icon(const uint8_t *icon_data);
  * or HWND_NULL if the point is on the desktop. */
 hwnd_t wm_window_at_point(int16_t x, int16_t y);
 
-/* Compositor: repaint all visible windows back-to-front, then swap buffers */
+/* Force a full clear on the next composite (layout changed) */
+void wm_force_full_repaint(void);
+
+/* Compositor: repaint all visible windows back-to-front */
 void wm_composite(void);
 
 #endif /* WINDOW_H */

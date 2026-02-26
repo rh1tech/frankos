@@ -25,6 +25,7 @@
 #include "../drivers/psram/psram.h"
 #include "dialog.h"
 #include "window.h"
+#include "swap.h"
 
 #define APP_TASK_PRIORITY 1
 
@@ -932,6 +933,7 @@ a5:
     uint32_t main_idx = 0xFFFFFFFF;
     uint32_t req_idx = 0xFFFFFFFF;
     uint32_t sig_idx = 0xFFFFFFFF;
+    uint32_t flags_idx = 0xFFFFFFFF;
     uint32_t w_init_idx = 0xFFFFFFFF;
     uint32_t w_fini_idx = 0xFFFFFFFF;
 
@@ -964,6 +966,8 @@ a6:
                 main_idx = i;
             } else if (0 == strcmp("signal", gfn)) {
                 sig_idx = i;
+            } else if (0 == strcmp("__app_flags", gfn)) {
+                flags_idx = i;
             }
         }
         if (psym->st_info == STR_TAB_WEAK_FUNC) {
@@ -1012,6 +1016,7 @@ a6:
     bootb_ctx->_fini_fn   = load_sec2mem_wrapper(pctx, _fini_idx, try_to_use_flash);
     printf("[load_app] load sig... heap=%u\n", (unsigned)xPortGetFreeHeapSize());
     bootb_ctx->sig_fn     = load_sec2mem_wrapper(pctx, sig_idx, try_to_use_flash);
+    bootb_ctx->flags_fn   = load_sec2mem_wrapper(pctx, flags_idx, try_to_use_flash);
     g_sram_for_code = false;   /* reset for next app load */
     printf("[load_app] all loaded! heap=%u\n", (unsigned)xPortGetFreeHeapSize());
     if(try_to_use_flash) {
@@ -1105,6 +1110,8 @@ e1:
 ///    debug_sections(bootb_ctx->sect_entries);
     goutf("[%p][%p][%p][%p]\n", bootb_ctx->req_ver_fn, bootb_ctx->_init_fn, bootb_ctx->main_fn, bootb_ctx->_fini_fn);
     #endif
+    /* Query app flags (e.g. APPFLAG_BACKGROUND) — 0 if not exported */
+    bootb_ctx->app_flags = bootb_ctx->flags_fn ? bootb_ctx->flags_fn() : 0;
     if (bootb_ctx->main_fn == 0) {
         goutf("'main' global function is not found in (or failed to load from) the '%s' elf-file\n", fn);
         ctx->ret_code = -1;
@@ -1202,30 +1209,58 @@ void task_mem_defer_free(void* ptr) {
 }
 
 
-/* ---- Static task creation: SRAM stack preferred for performance ---- */
+/* ---- Static task creation: shared SRAM stack + PSRAM TCB ---- */
+
+/* Background apps (e.g. FrankAmp) need their own stack in PSRAM since they
+ * keep running while suspended apps share the single SRAM stack block. */
 typedef struct {
     StackType_t stack[2048];   /* 8KB on ARM (StackType_t = uint32_t) */
     StaticTask_t tcb;
-} app_task_mem_t;
+} app_task_mem_bg_t;
+
+/* Foreground apps: TCB lives in PSRAM (small, ~200 bytes), stack is shared */
+typedef struct {
+    StaticTask_t tcb;
+} app_tcb_mem_t;
 
 static TaskHandle_t create_app_task_psram(
     TaskFunction_t fn, const char* name, void* param,
-    UBaseType_t priority, app_task_mem_t** out_mem)
+    UBaseType_t priority, void** out_mem, bool background)
 {
-    /* Try SRAM first — stack accesses are the hottest path in any app.
-     * PSRAM stacks go through QSPI (~80 cycles/access vs 1 for SRAM). */
-    app_task_mem_t* mem = (app_task_mem_t*)pvPortCalloc(1, sizeof(app_task_mem_t));
-    if (!mem && psram_is_available()) {
-        /* SRAM full — fall back to PSRAM */
-        mem = (app_task_mem_t*)psram_alloc(sizeof(app_task_mem_t));
-        if (mem) memset(mem, 0, sizeof(app_task_mem_t));
+    if (background) {
+        /* Background app: both TCB and stack in PSRAM (old behavior) */
+        app_task_mem_bg_t* mem = NULL;
+        if (psram_is_available()) {
+            mem = (app_task_mem_bg_t*)psram_alloc(sizeof(app_task_mem_bg_t));
+            if (mem) memset(mem, 0, sizeof(app_task_mem_bg_t));
+        }
+        if (!mem)
+            mem = (app_task_mem_bg_t*)pvPortCalloc(1, sizeof(app_task_mem_bg_t));
+        if (mem) {
+            *out_mem = mem;
+            return xTaskCreateStatic(fn, name, 2048, param, priority,
+                                     mem->stack, &mem->tcb);
+        }
+    } else {
+        /* Foreground app: TCB in SRAM (accessed by PendSV ISR, must be
+         * fast), stack is the shared SRAM block. */
+        app_tcb_mem_t* mem = (app_tcb_mem_t*)pvPortCalloc(1, sizeof(app_tcb_mem_t));
+        if (!mem && psram_is_available()) {
+            mem = (app_tcb_mem_t*)psram_alloc(sizeof(app_tcb_mem_t));
+            if (mem) memset(mem, 0, sizeof(app_tcb_mem_t));
+        }
+        if (mem) {
+            *out_mem = mem;
+            /* Re-fill shared stack with watermark before each new task */
+            StackType_t *ss = swap_get_shared_stack();
+            uint32_t words = swap_get_stack_words();
+            for (uint32_t i = 0; i < words; i++)
+                ss[i] = 0xa5a5a5a5;
+            return xTaskCreateStatic(fn, name, words, param, priority,
+                                     ss, &mem->tcb);
+        }
     }
-    if (mem) {
-        *out_mem = mem;
-        return xTaskCreateStatic(fn, name, 2048, param, priority,
-                                 mem->stack, &mem->tcb);
-    }
-    /* Both full — fall back to dynamic SRAM allocation */
+    /* Allocation failed — fall back to dynamic SRAM allocation */
     *out_mem = NULL;
     TaskHandle_t h;
     xTaskCreate(fn, name, 2048, param, priority, &h);
@@ -1267,6 +1302,9 @@ static void __in_hfa() vAppDetachedTask(void *pv) {
     set_scancode_handler(0);
     set_cp866_handler(0);
     /* ================================== */
+    /* Unregister from swap manager and auto-resume previous app */
+    swap_unregister_by_task(th);
+    swap_resume_previous();
     void* mem = ctx->task_mem;
     remove_ctx(ctx);
     #if DEBUG_APP_LOAD
@@ -1325,6 +1363,13 @@ void __in_hfa() __exit(int status) {
             remove_ctx(ctx); // detached case, noboty can cleanup it except there
         }
     }
+    /* Reset global input handlers */
+    set_usb_detached_handler(0);
+    set_scancode_handler(0);
+    set_cp866_handler(0);
+    /* Unregister from swap and resume previous app */
+    swap_unregister_by_task(th);
+    swap_resume_previous();
     if (mem) task_mem_defer_free(mem);
     vTaskDelete( NULL );
     __unreachable();
@@ -1346,9 +1391,19 @@ void __in_hfa() exec(cmd_ctx_t* ctx) { // like init proc flow
             #if DEBUG_APP_LOAD
             goutf("Clone ctx [%p]->[%p]\n", ctx, ctxi);
             #endif
-            app_task_mem_t* tmem;
-            create_app_task_psram(vAppDetachedTask, ctxi->argv[0], ctxi, APP_TASK_PRIORITY, &tmem);
+            void* tmem;
+            /* Background apps declare APPFLAG_BACKGROUND via __app_flags
+             * export — they get their own PSRAM stack so they keep running
+             * while other apps share the SRAM stack. */
+            bool bg = (ctxi->pboot_ctx &&
+                       (ctxi->pboot_ctx->app_flags & 1));  /* APPFLAG_BACKGROUND */
+            TaskHandle_t new_task = create_app_task_psram(
+                vAppDetachedTask, ctxi->argv[0], ctxi, APP_TASK_PRIORITY, &tmem, bg);
             ctxi->task_mem = tmem;
+            /* Mark as pending background so swap_register() picks it up
+             * when the app creates its window inside exec_sync(). */
+            if (bg && new_task)
+                swap_set_pending_background(new_task);
             cleanup_ctx(ctx);
         } else {
             #if DEBUG_APP_LOAD
@@ -1356,8 +1411,8 @@ void __in_hfa() exec(cmd_ctx_t* ctx) { // like init proc flow
             #endif
             ctx->parent_task = xTaskGetCurrentTaskHandle();
             kbd_set_stdin_owner(ctx->pid);
-            app_task_mem_t* tmem;
-            create_app_task_psram(vAppAttachedTask, ctx->argv[0], ctx, APP_TASK_PRIORITY, &tmem);
+            void* tmem;
+            create_app_task_psram(vAppAttachedTask, ctx->argv[0], ctx, APP_TASK_PRIORITY, &tmem, false);
             ctx->task_mem = tmem;
             #if DEBUG_APP_LOAD
             goutf("ctx [%p], ulTaskNotifyTake[%p]\n", ctx, ctx->parent_task);
@@ -1539,6 +1594,9 @@ e:
 }
 
 void __in_hfa() launch_elf_app(const char *path) {
+    /* Suspend current foreground app before launching new one */
+    swap_switch_to(HWND_NULL);
+
     cmd_ctx_t *ctx = get_cmd_startup_ctx();
     /* Set up a fresh context for this ELF */
     if (ctx->orig_cmd) vPortFree(ctx->orig_cmd);

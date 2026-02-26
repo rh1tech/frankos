@@ -3,7 +3,7 @@ set(PICO_BOARD pico2 CACHE STRING "Board type")
 cmake_minimum_required(VERSION 3.13)
 include(pico_sdk_import.cmake)
 
-project(solitaire C CXX ASM)
+project(notepad C CXX ASM)
 pico_sdk_init()
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
@@ -60,27 +60,26 @@ target_compile_definitions(${PROJECT_NAME} PRIVATE
 pico_enable_stdio_uart(${PROJECT_NAME} 0)
 pico_enable_stdio_usb(${PROJECT_NAME} 0)
 
-set(ICON_ICO "${CMAKE_CURRENT_SOURCE_DIR}/../../../assets/icons/w95_29.ico")
+set(ICON_ICO "${CMAKE_CURRENT_SOURCE_DIR}/../../../assets/icons/w2k_notepad_1.ico")
 set(CONVERT_ICO_16 "${CMAKE_CURRENT_SOURCE_DIR}/../../../tools/convert_ico_16.py")
 
 add_custom_command(
-    OUTPUT "${CMAKE_BINARY_DIR}/solitaire.inf"
+    OUTPUT "${CMAKE_BINARY_DIR}/notepad.inf"
     COMMAND ${Python3_EXECUTABLE} "${CONVERT_ICO_16}"
-        --inf "Solitaire" "${ICON_ICO}"
-        "${CMAKE_BINARY_DIR}/solitaire.inf"
+        --inf "Notepad" "${ICON_ICO}"
+        "${CMAKE_BINARY_DIR}/notepad.inf"
     DEPENDS "${CONVERT_ICO_16}" "${ICON_ICO}"
-    COMMENT "Generating solitaire.inf with embedded icon"
+    COMMENT "Generating notepad.inf with embedded icon"
 )
-add_custom_target(solitaire_inf ALL
-    DEPENDS "${CMAKE_BINARY_DIR}/solitaire.inf"
+add_custom_target(notepad_inf ALL
+    DEPENDS "${CMAKE_BINARY_DIR}/notepad.inf"
 )
-add_dependencies(${PROJECT_NAME} solitaire_inf)
 
 add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy
         $<TARGET_FILE:${PROJECT_NAME}>
-        ${COMPILED_DIR}/solitaire
+        ${COMPILED_DIR}/notepad
     COMMAND ${CMAKE_COMMAND} -E copy
-        "${CMAKE_BINARY_DIR}/solitaire.inf"
-        ${COMPILED_DIR}/solitaire.inf
+        "${CMAKE_BINARY_DIR}/notepad.inf"
+        ${COMPILED_DIR}/notepad.inf
 )

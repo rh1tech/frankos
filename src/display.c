@@ -34,16 +34,15 @@ static const uint32_t default_palette_rgb888[16] = {
 // CGA palette in RGB565 format for DispHSTX
 static u16 cga_palette_rgb565[16];
 
-// Double-buffered framebuffers (320 x 480, pair-encoded 4-bit)
+// Single framebuffer (320 x 480, pair-encoded 4-bit)
 #include <stdalign.h>
 static alignas(4) uint8_t framebuffer_a[FB_STRIDE * FB_HEIGHT];
-static alignas(4) uint8_t framebuffer_b[FB_STRIDE * FB_HEIGHT];
 
-static uint8_t *draw_buffer = framebuffer_b;
+static uint8_t *draw_buffer = framebuffer_a;
 uint8_t *display_show_buffer_ptr = framebuffer_a;
 
 /* Public pointer for inline fast-path access (display.h) */
-uint8_t *display_draw_buffer_ptr = framebuffer_b;
+uint8_t *display_draw_buffer_ptr = framebuffer_a;
 
 // Convert RGB888 to RGB565
 static inline u16 rgb888_to_rgb565(uint32_t rgb888) {
@@ -55,7 +54,6 @@ static inline u16 rgb888_to_rgb565(uint32_t rgb888) {
 
 void display_init(void) {
     memset(framebuffer_a, 0, sizeof(framebuffer_a));
-    memset(framebuffer_b, 0, sizeof(framebuffer_b));
     display_draw_buffer_ptr = draw_buffer;
 
     // Convert CGA palette to RGB565
@@ -112,18 +110,20 @@ void display_clear(uint8_t color) {
 }
 
 void display_swap_buffers(void) {
-    uint8_t *tmp = draw_buffer;
-    draw_buffer = display_show_buffer_ptr;
-    display_show_buffer_ptr = tmp;
-    display_draw_buffer_ptr = draw_buffer;
-
-    // Update the DispHSTX slot's framebuffer pointer to the new show buffer.
-    // The library reads this pointer during scanline rendering on Core 1.
-    pDispHstxVMode->strip[0].slot[0].buf = display_show_buffer_ptr;
+    /* No-op: single-buffer mode — kept for sys_table backward compat */
 }
 
 void display_wait_vsync(void) {
     DispHstxWaitVSync();
+}
+
+uint16_t display_get_scanline(void) {
+    return pDispHstxVMode->line;
+}
+
+void display_wait_scanline(int16_t y) {
+    while ((int16_t)pDispHstxVMode->line <= y)
+        __dmb();
 }
 
 void display_draw_test_pattern(void) {

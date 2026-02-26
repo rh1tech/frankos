@@ -44,6 +44,28 @@ void wd_begin(hwnd_t hwnd) {
         draw_ctx.cw = win->frame.w;
         draw_ctx.ch = win->frame.h;
     }
+
+    /* Clip client area to framebuffer bounds.
+     * Prevents buffer overflows when windows extend off-screen —
+     * apps using wd_fb_ptr() write directly with no bounds check. */
+    if (draw_ctx.ox < 0) {
+        draw_ctx.cw += draw_ctx.ox;
+        draw_ctx.ox = 0;
+    }
+    if (draw_ctx.oy < 0) {
+        draw_ctx.ch += draw_ctx.oy;
+        draw_ctx.oy = 0;
+    }
+    if (draw_ctx.ox + draw_ctx.cw > DISPLAY_WIDTH)
+        draw_ctx.cw = DISPLAY_WIDTH - draw_ctx.ox;
+    if (draw_ctx.oy + draw_ctx.ch > FB_HEIGHT)
+        draw_ctx.ch = FB_HEIGHT - draw_ctx.oy;
+
+    if (draw_ctx.cw <= 0 || draw_ctx.ch <= 0) {
+        draw_ctx.active = false;
+        return;
+    }
+
     draw_ctx.active = true;
 }
 
@@ -206,9 +228,12 @@ void wd_icon_32(int16_t x, int16_t y, const uint8_t *icon_data) {
 
 uint8_t *wd_fb_ptr(int16_t cx, int16_t cy, int16_t *stride) {
     if (!draw_ctx.active) return NULL;
+    int16_t sx = draw_ctx.ox + cx;
+    int16_t sy = draw_ctx.oy + cy;
+    if (sx < 0 || sy < 0 || sy >= FB_HEIGHT || sx >= DISPLAY_WIDTH)
+        return NULL;
     *stride = FB_STRIDE;
-    return &display_draw_buffer_ptr[(draw_ctx.oy + cy) * FB_STRIDE
-                                    + ((draw_ctx.ox + cx) >> 1)];
+    return &display_draw_buffer_ptr[sy * FB_STRIDE + (sx >> 1)];
 }
 
 void wd_button(int16_t x, int16_t y, int16_t w, int16_t h,

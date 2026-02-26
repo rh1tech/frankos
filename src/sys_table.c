@@ -42,6 +42,9 @@
 #include "nespad.h"
 #include "sound.h"
 #include "mp3dec.h"
+#include "clipboard.h"
+#include "controls.h"
+#include "find_dialog.h"
 #include <math.h>
 
 #include "sys/fcntl.h"
@@ -602,6 +605,43 @@ unsigned long __in_systable() __aligned(4096) sys_table_ptrs[] = {
     MP3GetNextFrameInfo, // 448
     pcm_init, // 449
     pcm_write, // 450
+    // API v.29 — Clipboard
+    clipboard_set_text, // 451
+    clipboard_get_text, // 452
+    clipboard_get_length, // 453
+    clipboard_clear, // 454
+    // API v.29 — Scrollbar controls
+    scrollbar_init, // 455
+    scrollbar_set_range, // 456
+    scrollbar_set_pos, // 457
+    scrollbar_paint, // 458
+    scrollbar_event, // 459
+    // API v.29 — Textarea controls
+    textarea_init, // 460
+    textarea_set_text, // 461
+    textarea_get_text, // 462
+    textarea_get_length, // 463
+    textarea_set_rect, // 464
+    textarea_paint, // 465
+    textarea_event, // 466
+    textarea_cut, // 467
+    textarea_copy, // 468
+    textarea_paste, // 469
+    textarea_select_all, // 470
+    textarea_find, // 471
+    textarea_replace, // 472
+    textarea_replace_all, // 473
+    textarea_blink, // 474
+    // API v.29 — File dialog save mode
+    file_dialog_save, // 475
+    // API v.29 — Find/Replace dialog
+    find_dialog_show, // 476
+    replace_dialog_show, // 477
+    find_dialog_get_text, // 478
+    find_dialog_get_replace_text, // 479
+    find_dialog_case_sensitive, // 480
+    find_dialog_close, // 481
+    wm_mark_dirty, // 482
     // TODO:
     0
 };

@@ -51,6 +51,7 @@ typedef void* (*bootb_init_ptr_t)( void );
 typedef int (*bootb_main_ptr_t)( int, char** );
 typedef void (*bootb_fini_ptr_t)( void* );
 typedef void (*bootb_sig_ptr_t)( int );
+typedef uint32_t (*bootb_flags_ptr_t)( void );
 
 typedef struct {
     bootb_req_ver_ptr_t req_ver_fn;
@@ -58,8 +59,10 @@ typedef struct {
     bootb_main_ptr_t main_fn;
     bootb_fini_ptr_t _fini_fn;
     bootb_sig_ptr_t sig_fn;
+    bootb_flags_ptr_t flags_fn;
     list_t* /*sect_entry_t*/ sections;
     void* _fini_ctx;
+    uint32_t app_flags;
 } bootb_ctx_t;
 
 typedef struct {

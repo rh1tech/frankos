@@ -24,6 +24,8 @@ void display_set_pixel(int x, int y, uint8_t color);
 void display_clear(uint8_t color);
 void display_swap_buffers(void);
 void display_wait_vsync(void);
+uint16_t display_get_scanline(void);
+void display_wait_scanline(int16_t y);
 void display_draw_test_pattern(void);
 
 /* Direct draw-buffer pointer — updated by display_init / display_swap_buffers */

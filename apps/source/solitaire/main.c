@@ -1005,6 +1005,25 @@ static void sol_paint(hwnd_t hwnd) {
     uint8_t *fb = wd_fb_ptr(0, 0, &stride);
     if (!fb) return;
 
+    /* Drag partial update: skip full green fill to avoid flicker.
+     * This runs inside wm_composite() after cursor erase and before
+     * cursor stamp — no conflict with cursor save-under.
+     * Fall through to full repaint when WF_FRAME_DIRTY is set
+     * (structural change like window expose). */
+    if (st->dragging && !(win->flags & WF_FRAME_DIRTY)) {
+        if (st->save_valid)
+            drag_restore(fb, stride, st);
+        else
+            fb_erase_source(fb, stride, st);
+        int16_t nx = st->drag_mx - st->drag_off_x;
+        int16_t ny = st->drag_my - st->drag_off_y;
+        drag_save(fb, stride, st, nx, ny);
+        fb_dragged_cards(fb, stride, st, nx, ny);
+        st->show_fb = fb;
+        st->fb_stride = stride;
+        return;
+    }
+
     /* Green felt background — fast memset via fb_fill */
     fb_fill(fb, stride, 0, 0, CLIENT_W, CLIENT_H, COLOR_GREEN);
 
@@ -1338,28 +1357,15 @@ static bool sol_event(hwnd_t hwnd, const window_event_t *ev) {
             if (dy < 0) dy = -dy;
             if (dx >= DRAG_THRESHOLD || dy >= DRAG_THRESHOLD) {
                 st->dragging = true;
-                /* Instant feedback: erase source + draw card on show buffer */
-                if (st->show_fb) {
-                    fb_erase_source(st->show_fb, st->fb_stride, st);
-                    int16_t nx = mx - st->drag_off_x;
-                    int16_t ny = my - st->drag_off_y;
-                    drag_save(st->show_fb, st->fb_stride, st, nx, ny);
-                    fb_dragged_cards(st->show_fb, st->fb_stride,
-                                     st, nx, ny);
-                }
+                /* Visual update deferred to sol_paint() which runs
+                 * inside wm_composite after cursor erase. */
             }
-        } else if (st->show_fb) {
-            /* Dirty update on show buffer — instant on DVI */
-            drag_restore(st->show_fb, st->fb_stride, st);
-            int16_t nx = mx - st->drag_off_x;
-            int16_t ny = my - st->drag_off_y;
-            drag_save(st->show_fb, st->fb_stride, st, nx, ny);
-            fb_dragged_cards(st->show_fb, st->fb_stride, st, nx, ny);
         }
+        /* Position updated; visual update deferred to sol_paint(). */
 
-        /* wm_invalidate triggers compositor_dirty so the event loop
-         * keeps dispatching WM_MOUSEMOVE events to us.  Without this,
-         * mouse-move events pile up undelivered in the queue. */
+        /* Trigger sol_paint() in the compositor for visual update.
+         * sol_paint does a partial drag update (no green fill)
+         * inside wm_composite after cursor erase — no save-under conflict. */
         if (st->dragging)
             wm_invalidate(st->hwnd);
         return true;

@@ -14,6 +14,7 @@
 #include "taskbar.h"
 #include "startmenu.h"
 #include "sysmenu.h"
+#include "swap.h"
 #include <string.h>
 #include "hardware/sync.h"
 #include "FreeRTOS.h"
@@ -71,6 +72,10 @@ static int16_t drag_anchor_y;
 static rect_t  drag_orig;                /* window rect at drag start */
 static rect_t  drag_rect;                /* proposed rect during drag */
 static uint8_t drag_edge;                /* HT_BORDER_* for resize */
+
+/* Drag outline overlay — XOR drawn on show buffer, zero extra RAM.
+ * erase() uses drag_rect directly; callers must erase before updating it. */
+static bool drag_ol_active;
 
 /* Title bar button press tracking — press-on-release behavior */
 static hwnd_t  titlebar_btn_hwnd  = HWND_NULL; /* which window's button is captured */
@@ -147,9 +152,9 @@ void wm_dispatch_events(void) {
             mouse_pos.y = ev->mouse.y;
         }
 
-        /* Deliver to window's event handler */
+        /* Deliver to window's event handler (skip suspended windows) */
         window_t *win = wm_get_window(hwnd);
-        if (win && win->event_handler) {
+        if (win && win->event_handler && !(win->flags & WF_SUSPENDED)) {
             win->event_handler(hwnd, ev);
         }
     }
@@ -312,26 +317,116 @@ static cursor_type_t cursor_for_edge(uint8_t zone) {
     }
 }
 
+/*==========================================================================
+ * XOR outline drawing — directly on show buffer
+ *=========================================================================*/
+
+static void show_xor_hline(int16_t x, int16_t y, int16_t w) {
+    if (y < 0 || y >= DISPLAY_HEIGHT || w <= 0) return;
+    int16_t x0 = x < 0 ? 0 : x;
+    int16_t x1 = x + w - 1;
+    if (x1 >= DISPLAY_WIDTH) x1 = DISPLAY_WIDTH - 1;
+    if (x0 > x1) return;
+
+    uint8_t *row = &display_show_buffer_ptr[y * FB_STRIDE];
+    int16_t px = x0;
+
+    if (px & 1) { row[px >> 1] ^= 0x0F; px++; }
+    while (px + 1 <= x1) { row[px >> 1] ^= 0xFF; px += 2; }
+    if (px <= x1) { row[px >> 1] ^= 0xF0; }
+}
+
+static void show_xor_vline(int16_t x, int16_t y, int16_t h) {
+    if (x < 0 || x >= DISPLAY_WIDTH || h <= 0) return;
+    int16_t y0 = y < 0 ? 0 : y;
+    int16_t y1 = y + h - 1;
+    if (y1 >= DISPLAY_HEIGHT) y1 = DISPLAY_HEIGHT - 1;
+    if (y0 > y1) return;
+
+    int16_t byte_off = x >> 1;
+    uint8_t mask = (x & 1) ? 0x0F : 0xF0;
+    uint8_t *p = &display_show_buffer_ptr[y0 * FB_STRIDE + byte_off];
+
+    for (int16_t r = y0; r <= y1; r++) {
+        *p ^= mask;
+        p += FB_STRIDE;
+    }
+}
+
+static void show_xor_rect(int16_t x, int16_t y, int16_t w, int16_t h) {
+    if (w <= 0 || h <= 0) return;
+    if (h == 1) { show_xor_hline(x, y, w); return; }
+    if (w == 1) { show_xor_vline(x, y, h); return; }
+    show_xor_hline(x, y, w);
+    show_xor_hline(x, y + h - 1, w);
+    show_xor_vline(x, y + 1, h - 2);
+    show_xor_vline(x + w - 1, y + 1, h - 2);
+}
+
+static void show_xor_outline(const rect_t *r) {
+    show_xor_rect(r->x, r->y, r->w, r->h);
+    if (r->w > 2 && r->h > 2)
+        show_xor_rect(r->x + 1, r->y + 1, r->w - 2, r->h - 2);
+}
+
+/*==========================================================================
+ * Drag overlay — stamp/erase XOR outline on show buffer
+ *=========================================================================*/
+
+void drag_overlay_stamp(const rect_t *r) {
+    if (drag_ol_active) return;
+    show_xor_outline(r);
+    drag_ol_active = true;
+}
+
+void drag_overlay_erase(void) {
+    if (!drag_ol_active) return;
+    show_xor_outline(&drag_rect);
+    drag_ol_active = false;
+}
+
+void drag_overlay_reset(void) {
+    drag_ol_active = false;
+}
+
 void wm_handle_mouse_input(uint8_t type, int16_t x, int16_t y, uint8_t buttons) {
     /* ---- Active drag/resize in progress ---- */
     if (drag_mode != DRAG_NONE) {
         if (type == WM_MOUSEMOVE) {
+            if (cursor_overlay_is_locked()) return;
+            /* Erase overlays while drag_rect still matches the stamp */
+            cursor_overlay_erase();
+            drag_overlay_erase();
+            /* Update drag_rect */
             if (drag_mode == DRAG_MOVE) {
                 drag_rect.x = drag_orig.x + (x - drag_anchor_x);
                 drag_rect.y = drag_orig.y + (y - drag_anchor_y);
             } else {
                 update_resize_rect(x, y);
             }
-            compositor_dirty = 1;
+            /* Stamp new outline + cursor — no full recomposite */
+            drag_overlay_stamp(&drag_rect);
+            int16_t cx, cy;
+            wm_get_cursor_pos(&cx, &cy);
+            cursor_overlay_stamp(cx, cy);
             return;
         }
         if (type == WM_LBUTTONUP) {
-            /* Apply final rect */
+            /* Erase overlays from show buffer before recomposite */
+            if (!cursor_overlay_is_locked()) {
+                cursor_overlay_erase();
+                drag_overlay_erase();
+            }
             wm_set_window_rect(drag_hwnd, drag_rect.x, drag_rect.y,
                                 drag_rect.w, drag_rect.h);
             drag_mode = DRAG_NONE;
             drag_hwnd = HWND_NULL;
             cursor_set_type(CURSOR_ARROW);
+            if (!cursor_overlay_is_locked()) {
+                int16_t cx, cy;
+                wm_get_cursor_pos(&cx, &cy);
+                cursor_overlay_stamp(cx, cy);
+            }
             compositor_dirty = 1;
             return;
         }
@@ -391,6 +486,8 @@ void wm_handle_mouse_input(uint8_t type, int16_t x, int16_t y, uint8_t buttons) 
         window_t *win = wm_get_window(target);
         if (!win) return;
 
+        /* Resume suspended app before focusing */
+        swap_switch_to(target);
         wm_set_focus(target);
 
         uint8_t zone = theme_hit_test(&win->frame, win->flags, x, y);

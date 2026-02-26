@@ -254,6 +254,7 @@ static void zx_paint(hwnd_t hwnd) {
      * via a 4-entry LUT indexed by bit pairs. */
     int16_t stride;
     uint8_t *fb_base = wd_fb_ptr(BORDER_H, BORDER_V, &stride);
+    if (!fb_base) return;
     uint8_t *vmem = sys->ram[0];
     bool flash_swap = (sys->blink_counter & 0x10) != 0;
 

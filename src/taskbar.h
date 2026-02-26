@@ -33,6 +33,12 @@ int16_t taskbar_work_area_height(void);
 /* Force taskbar repaint (call when windows are created/destroyed/minimized) */
 void taskbar_invalidate(void);
 
+/* Set taskbar dirty without calling wm_mark_dirty (for compositor use) */
+void taskbar_force_dirty(void);
+
+/* Query whether taskbar needs repainting this frame */
+bool taskbar_needs_redraw(void);
+
 /* Right-click context menu on taskbar buttons */
 bool taskbar_mouse_rclick(int16_t x, int16_t y);
 void taskbar_popup_draw(void);
