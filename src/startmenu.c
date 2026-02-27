@@ -47,10 +47,12 @@ typedef struct {
 
 static const sm_item_t sm_items[] = {
     { "Programs",  0,               false, true  },
-    { "Firmware",  SM_ID_FIRMWARE,  true,  false },
+    { "Firmware",  SM_ID_FIRMWARE,  true,  true  },
     { "Reboot",    SM_ID_REBOOT,    true,  false },
 };
 #define SM_ITEM_COUNT  (sizeof(sm_items) / sizeof(sm_items[0]))
+#define SM_IDX_PROGRAMS  0
+#define SM_IDX_FIRMWARE  1
 
 /*==========================================================================
  * Dynamic /fos/ app scanning
@@ -146,6 +148,52 @@ static void fos_scan(void) {
 }
 
 /*==========================================================================
+ * Dynamic /uf2/ firmware scanning
+ *=========================================================================*/
+
+#define UF2_MAX_FILES 16
+#define UF2_NAME_LEN  28
+#define UF2_PATH_LEN  40
+
+static struct {
+    char name[UF2_NAME_LEN];  /* display name (filename without ext) */
+    char path[UF2_PATH_LEN];  /* e.g. "/uf2/game.uf2" */
+} uf2_files[UF2_MAX_FILES];
+static int uf2_file_count = 0;
+
+static void uf2_scan(void) {
+    uf2_file_count = 0;
+    if (!sdcard_is_mounted()) return;
+
+    DIR dir;
+    FILINFO fno;
+    if (f_opendir(&dir, "/uf2") != FR_OK) return;
+
+    while (uf2_file_count < UF2_MAX_FILES) {
+        if (f_readdir(&dir, &fno) != FR_OK || fno.fname[0] == 0)
+            break;
+        if (fno.fattrib & AM_DIR) continue;
+
+        /* Accept .uf2 and .m2p2 extensions */
+        const char *dot = strrchr(fno.fname, '.');
+        if (!dot) continue;
+        if (strcmp(dot, ".uf2") != 0 && strcmp(dot, ".m2p2") != 0) continue;
+
+        snprintf(uf2_files[uf2_file_count].path,
+                 UF2_PATH_LEN, "/uf2/%s", fno.fname);
+
+        /* Display name: filename without extension */
+        size_t base_len = dot - fno.fname;
+        if (base_len >= UF2_NAME_LEN) base_len = UF2_NAME_LEN - 1;
+        memcpy(uf2_files[uf2_file_count].name, fno.fname, base_len);
+        uf2_files[uf2_file_count].name[base_len] = '\0';
+
+        uf2_file_count++;
+    }
+    f_closedir(&dir);
+}
+
+/*==========================================================================
  * Internal state
  *=========================================================================*/
 
@@ -157,6 +205,11 @@ static int16_t sm_x, sm_y, sm_w, sm_h;
 static bool   sub_open = false;
 static int8_t sub_hover = -1;
 static int16_t sub_x, sub_y, sub_w, sub_h;
+
+/* Firmware submenu state */
+static bool   fw_open = false;
+static int8_t fw_hover = -1;
+static int16_t fw_x, fw_y, fw_w, fw_h;
 
 /*==========================================================================
  * Geometry
@@ -185,12 +238,31 @@ static void compute_sub_rect(void) {
         sub_y = 0;
 }
 
+static void compute_fw_rect(void) {
+    fw_w = 172;
+    fw_h = 4 + (uf2_file_count > 0 ? uf2_file_count : 1) * SM_ITEM_HEIGHT;
+    fw_x = sm_x + sm_w;
+    /* Align with the Firmware item row */
+    int iy = sm_y + 2;
+    for (int i = 0; i < SM_IDX_FIRMWARE; i++) {
+        if (sm_items[i].separator) iy += SM_SEPARATOR_H;
+        iy += SM_ITEM_HEIGHT;
+    }
+    if (sm_items[SM_IDX_FIRMWARE].separator) iy += SM_SEPARATOR_H;
+    fw_y = iy;
+    if (fw_y + fw_h > TASKBAR_Y)
+        fw_y = TASKBAR_Y - fw_h;
+    if (fw_y < 0)
+        fw_y = 0;
+}
+
 /*==========================================================================
  * Public API
  *=========================================================================*/
 
 void startmenu_init(void) {
     fos_scan();
+    uf2_scan();
 }
 
 void startmenu_toggle(void) {
@@ -201,6 +273,8 @@ void startmenu_toggle(void) {
         sm_hover = -1;
         sub_open = false;
         sub_hover = -1;
+        fw_open = false;
+        fw_hover = -1;
         compute_menu_rect();
         taskbar_invalidate();  /* redraw Start button in sunken state */
     }
@@ -210,8 +284,10 @@ void startmenu_close(void) {
     if (!sm_open) return;   /* already closed — avoid redundant repaint */
     sm_open = false;
     sub_open = false;
+    fw_open = false;
     sm_hover = -1;
     sub_hover = -1;
+    fw_hover = -1;
     /* Force full repaint to guarantee stale menu pixels are cleared,
      * even if the popup-close transition detector misses the change. */
     wm_force_full_repaint();
@@ -248,14 +324,29 @@ static void execute_sub_item(int index) {
     cursor_set_type(CURSOR_ARROW);
 }
 
+static void execute_fw_item(int index) {
+    if (index < 0 || index >= uf2_file_count) return;
+    startmenu_close();
+    cursor_set_type(CURSOR_WAIT);
+    wm_composite();
+
+    /* Show "Flashing firmware..." notification */
+    gfx_fill_rect(160, 200, 320, 80, THEME_BUTTON_FACE);
+    gfx_rect(160, 200, 320, 80, COLOR_DARK_GRAY);
+    gfx_rect(161, 201, 318, 78, COLOR_WHITE);
+    gfx_text_ui(190, 230, "Flashing firmware...", COLOR_BLACK, THEME_BUTTON_FACE);
+    display_swap_buffers();
+
+    load_firmware(uf2_files[index].path);
+    /* If load_firmware returns (error), restore cursor */
+    cursor_set_type(CURSOR_ARROW);
+}
+
 static void execute_item(uint8_t id) {
     startmenu_close();
     switch (id) {
     case SM_ID_TERMINAL:
         spawn_terminal_window();
-        break;
-    case SM_ID_FIRMWARE:
-        /* Stub — will have submenu in the future */
         break;
     case SM_ID_REBOOT:
         watchdog_reboot(0, 0, 0);
@@ -440,6 +531,31 @@ void startmenu_draw(void) {
             sy += SM_ITEM_HEIGHT;
         }
     }
+
+    /* Draw Firmware submenu if open */
+    if (fw_open) {
+        gfx_fill_rect(fw_x, fw_y, fw_w, fw_h, THEME_BUTTON_FACE);
+        gfx_hline(fw_x, fw_y, fw_w, COLOR_WHITE);
+        gfx_vline(fw_x, fw_y, fw_h, COLOR_WHITE);
+        gfx_hline(fw_x, fw_y + fw_h - 1, fw_w, COLOR_DARK_GRAY);
+        gfx_vline(fw_x + fw_w - 1, fw_y, fw_h, COLOR_DARK_GRAY);
+
+        int fy = fw_y + 2;
+        if (uf2_file_count == 0) {
+            gfx_text_ui(fw_x + 6, fy + (SM_ITEM_HEIGHT - FONT_UI_HEIGHT) / 2,
+                        "(no .uf2 files)", COLOR_DARK_GRAY, THEME_BUTTON_FACE);
+        } else {
+            for (int i = 0; i < uf2_file_count; i++) {
+                bool hovered = (i == fw_hover);
+                uint8_t bg = hovered ? COLOR_BLUE : THEME_BUTTON_FACE;
+                uint8_t fg = hovered ? COLOR_WHITE : COLOR_BLACK;
+                gfx_fill_rect(fw_x + 2, fy, fw_w - 4, SM_ITEM_HEIGHT, bg);
+                gfx_text_ui(fw_x + 6, fy + (SM_ITEM_HEIGHT - FONT_UI_HEIGHT) / 2,
+                            uf2_files[i].name, fg, bg);
+                fy += SM_ITEM_HEIGHT;
+            }
+        }
+    }
 }
 
 /*==========================================================================
@@ -449,7 +565,31 @@ void startmenu_draw(void) {
 bool startmenu_mouse(uint8_t type, int16_t x, int16_t y) {
     if (!sm_open) return false;
 
-    /* Check submenu first */
+    /* Check firmware submenu first */
+    if (fw_open && x >= fw_x && x < fw_x + fw_w &&
+        y >= fw_y && y < fw_y + fw_h) {
+        if (type == WM_MOUSEMOVE || type == WM_LBUTTONDOWN) {
+            int fy = fw_y + 2;
+            int new_fw = -1;
+            for (int i = 0; i < uf2_file_count; i++) {
+                if (y >= fy && y < fy + SM_ITEM_HEIGHT) {
+                    new_fw = i;
+                    break;
+                }
+                fy += SM_ITEM_HEIGHT;
+            }
+            if (new_fw != fw_hover) {
+                fw_hover = new_fw;
+                wm_mark_dirty();
+            }
+        }
+        if (type == WM_LBUTTONUP && fw_hover >= 0) {
+            execute_fw_item(fw_hover);
+        }
+        return true;
+    }
+
+    /* Check Programs submenu */
     if (sub_open && x >= sub_x && x < sub_x + sub_w &&
         y >= sub_y && y < sub_y + sub_h) {
         int sub_count = fos_app_count + 2;
@@ -490,16 +630,17 @@ bool startmenu_mouse(uint8_t type, int16_t x, int16_t y) {
             }
             if (new_hover != sm_hover) {
                 sm_hover = new_hover;
-                /* Open submenu when hovering Programs.  When the submenu
-                 * is already open, keep it visible while the cursor moves
-                 * over other items — prevents the submenu from closing
-                 * during diagonal mouse movement toward it. */
-                if (sm_hover == 0 && sm_items[sm_hover].has_submenu) {
-                    if (!sub_open) {
-                        sub_open = true;
-                        sub_hover = -1;
-                        compute_sub_rect();
-                    }
+                /* Close both submenus, then open the relevant one */
+                sub_open = false;
+                sub_hover = -1;
+                fw_open = false;
+                fw_hover = -1;
+                if (sm_hover == SM_IDX_PROGRAMS) {
+                    sub_open = true;
+                    compute_sub_rect();
+                } else if (sm_hover == SM_IDX_FIRMWARE) {
+                    fw_open = true;
+                    compute_fw_rect();
                 }
                 wm_mark_dirty();
             }
@@ -531,6 +672,41 @@ bool startmenu_handle_key(uint8_t hid_code, uint8_t modifiers) {
     if (!sm_open) return false;
     (void)modifiers;
 
+    /* Firmware submenu keyboard handling */
+    if (fw_open) {
+        switch (hid_code) {
+        case 0x52: /* UP */
+            if (uf2_file_count > 0) {
+                fw_hover--;
+                if (fw_hover < 0) fw_hover = uf2_file_count - 1;
+            }
+            wm_mark_dirty();
+            return true;
+        case 0x51: /* DOWN */
+            if (uf2_file_count > 0) {
+                fw_hover++;
+                if (fw_hover >= uf2_file_count) fw_hover = 0;
+            }
+            wm_mark_dirty();
+            return true;
+        case 0x50: /* LEFT — close submenu */
+            fw_open = false;
+            fw_hover = -1;
+            wm_mark_dirty();
+            return true;
+        case 0x28: /* ENTER */
+            if (fw_hover >= 0) execute_fw_item(fw_hover);
+            return true;
+        case 0x29: /* ESC */
+            fw_open = false;
+            fw_hover = -1;
+            wm_mark_dirty();
+            return true;
+        }
+        return true;
+    }
+
+    /* Programs submenu keyboard handling */
     if (sub_open) {
         int sub_count = fos_app_count + 2;
         switch (hid_code) {
@@ -561,33 +737,51 @@ bool startmenu_handle_key(uint8_t hid_code, uint8_t modifiers) {
         return true;
     }
 
+    /* Main menu keyboard handling */
     switch (hid_code) {
     case 0x52: /* UP */
         sm_hover--;
         if (sm_hover < 0) sm_hover = SM_ITEM_COUNT - 1;
         sub_open = false;
+        fw_open = false;
         wm_mark_dirty();
         return true;
     case 0x51: /* DOWN */
         sm_hover++;
         if (sm_hover >= (int)SM_ITEM_COUNT) sm_hover = 0;
         sub_open = false;
+        fw_open = false;
         wm_mark_dirty();
         return true;
     case 0x4F: /* RIGHT — open submenu if applicable */
-        if (sm_hover == 0 && sm_items[sm_hover].has_submenu) {
-            sub_open = true;
-            sub_hover = 0;
-            compute_sub_rect();
+        if (sm_hover >= 0 && sm_items[sm_hover].has_submenu) {
+            sub_open = false; sub_hover = -1;
+            fw_open = false;  fw_hover = -1;
+            if (sm_hover == SM_IDX_PROGRAMS) {
+                sub_open = true;
+                sub_hover = 0;
+                compute_sub_rect();
+            } else if (sm_hover == SM_IDX_FIRMWARE) {
+                fw_open = true;
+                fw_hover = uf2_file_count > 0 ? 0 : -1;
+                compute_fw_rect();
+            }
             wm_mark_dirty();
         }
         return true;
     case 0x28: /* ENTER */
         if (sm_hover >= 0) {
-            if (sm_hover == 0 && sm_items[sm_hover].has_submenu) {
+            if (sm_hover == SM_IDX_PROGRAMS) {
+                fw_open = false; fw_hover = -1;
                 sub_open = true;
                 sub_hover = 0;
                 compute_sub_rect();
+                wm_mark_dirty();
+            } else if (sm_hover == SM_IDX_FIRMWARE) {
+                sub_open = false; sub_hover = -1;
+                fw_open = true;
+                fw_hover = uf2_file_count > 0 ? 0 : -1;
+                compute_fw_rect();
                 wm_mark_dirty();
             } else if (sm_items[sm_hover].id > 0) {
                 execute_item(sm_items[sm_hover].id);

@@ -44,6 +44,118 @@
 #include "psram_init.h"
 #endif
 
+/*==========================================================================
+ * UF2 Over-Mode Boot Support
+ *
+ * ZERO_BLOCK: 4KB placeholder at 0x10EFF000 (just below OS code).
+ * When flashing user firmware, sector 0 is saved here with a magic marker.
+ *
+ * before_main(): constructor that runs before main().  If SRAM magic is
+ * set (from a previous load_firmware + watchdog reboot), it loads the
+ * firmware's original SP and Reset from ZERO_BLOCK and jumps to it.
+ * If Space key is held, it skips the jump and falls through to FRANK OS.
+ *=========================================================================*/
+#define ZERO_BLOCK_OFFSET   ((16ul << 20) - (1ul << 20) - (4ul << 10))  /* 0xEFF000 */
+#define ZERO_BLOCK_ADDRESS  (XIP_BASE + ZERO_BLOCK_OFFSET)              /* 0x10EFF000 */
+#define FLASH_MAGIC_OVER    0x3836d91au
+#define SRAM_MAGIC_BOOT     0x383da910u
+#define SRAM_MAGIC_ADDR     ((volatile uint32_t *)(0x20000000 + (512 << 10) - 8))
+#define SRAM_UIFORCE_ADDR   ((volatile uint32_t *)(0x20000000 + (512 << 10) - 4))
+#define SRAM_UIFORCE_MAGIC  0x17F00FFFu
+
+/* 4KB erase block placeholder — placed at 0x10EFF000 by linker */
+const uint8_t erase_block[4096] __attribute__((aligned(4096), section(".erase_block"), used)) = {0};
+
+/* PS/2 GPIO registers for bare-metal Space key check */
+#define BM_IO_BANK0_BASE   0x40028000u
+#define BM_PADS_BANK0_BASE 0x40038000u
+#define BM_SIO_BASE         0xD0000000u
+#define BM_GPIO_IN_REG      (*(volatile uint32_t *)(BM_SIO_BASE + 0x008))
+#define BM_PS2_CLK_PIN      2
+#define BM_PS2_DATA_PIN     3
+
+__attribute__((constructor))
+static void before_main(void) {
+    /* Skip if UI-force magic is set (user held Space last time) */
+    if (*SRAM_UIFORCE_ADDR == SRAM_UIFORCE_MAGIC) {
+        *SRAM_UIFORCE_ADDR = 0;
+        return;
+    }
+
+    if (*SRAM_MAGIC_ADDR != SRAM_MAGIC_BOOT)
+        return;
+
+    /* Clear SRAM magic so we don't loop */
+    *SRAM_MAGIC_ADDR = 0;
+
+    /* Check if Space key is held — raw PS/2 GPIO polling.
+     * If Space detected, fall through to FRANK OS. */
+    {
+        /* Configure GPIO 2 (CLK) and GPIO 3 (DATA) as SIO inputs with pull-ups */
+        *(volatile uint32_t *)(BM_IO_BANK0_BASE + 4 + BM_PS2_CLK_PIN * 8) = 5;
+        *(volatile uint32_t *)(BM_IO_BANK0_BASE + 4 + BM_PS2_DATA_PIN * 8) = 5;
+        uint32_t pad = (1u << 6) | (1u << 3) | (1u << 1); /* IE | PUE | SCHMITT */
+        *(volatile uint32_t *)(BM_PADS_BANK0_BASE + 4 + BM_PS2_CLK_PIN * 4) = pad;
+        *(volatile uint32_t *)(BM_PADS_BANK0_BASE + 4 + BM_PS2_DATA_PIN * 4) = pad;
+        for (volatile int d = 0; d < 5000; d++) ;
+
+        uint32_t clk_mask  = 1u << BM_PS2_CLK_PIN;
+        uint32_t data_mask = 1u << BM_PS2_DATA_PIN;
+
+        for (int attempt = 0; attempt < 30; attempt++) {
+            int timeout = 200000;
+            while ((BM_GPIO_IN_REG & clk_mask) && --timeout > 0) ;
+            if (timeout <= 0) continue;
+            timeout = 50000;
+            while (!(BM_GPIO_IN_REG & clk_mask) && --timeout > 0) ;
+            if (timeout <= 0) continue;
+
+            uint8_t data = 0;
+            int ok = 1;
+            for (int i = 0; i < 8 && ok; i++) {
+                timeout = 50000;
+                while ((BM_GPIO_IN_REG & clk_mask) && --timeout > 0) ;
+                if (timeout <= 0) { ok = 0; break; }
+                if (BM_GPIO_IN_REG & data_mask) data |= (1u << i);
+                timeout = 50000;
+                while (!(BM_GPIO_IN_REG & clk_mask) && --timeout > 0) ;
+                if (timeout <= 0) { ok = 0; break; }
+            }
+            if (!ok) continue;
+            /* Skip parity + stop bits */
+            timeout = 50000;
+            while ((BM_GPIO_IN_REG & clk_mask) && --timeout > 0) ;
+            timeout = 50000;
+            while (!(BM_GPIO_IN_REG & clk_mask) && --timeout > 0) ;
+            timeout = 50000;
+            while ((BM_GPIO_IN_REG & clk_mask) && --timeout > 0) ;
+            timeout = 50000;
+            while (!(BM_GPIO_IN_REG & clk_mask) && --timeout > 0) ;
+
+            if (data == 0x29) {
+                /* Space detected — set UI force magic and fall through */
+                *SRAM_UIFORCE_ADDR = SRAM_UIFORCE_MAGIC;
+                return;
+            }
+        }
+    }
+
+    /* No Space key — check ZERO_BLOCK magic and jump to firmware */
+    if (((volatile uint32_t *)ZERO_BLOCK_ADDRESS)[1023] == FLASH_MAGIC_OVER) {
+        __asm volatile (
+            "ldr r0, =%[zb_addr]\n"
+            "ldmia r0, {r0, r1}\n"
+            "msr msp, r0\n"
+            "bx r1\n"
+            :: [zb_addr] "X" (ZERO_BLOCK_ADDRESS)
+            : "r0", "r1", "memory"
+        );
+        __builtin_unreachable();
+    }
+
+    /* ZERO_BLOCK not valid — fall through to normal FRANK OS boot */
+}
+
 #define LED_PIN PICO_DEFAULT_LED_PIN
 
 /* ---- Static allocation support for FreeRTOS ---- */
@@ -100,6 +212,9 @@ typedef struct {
 
 static crash_dump_t __attribute__((section(".uninitialized_data")))
     g_crash_dump;
+
+// Forward declaration — used by the vector table fixup in main().
+void isr_hardfault(void);
 
 // Hard fault handler — saves crash info to SRAM, reboots via watchdog.
 // Named isr_hardfault to override the weak symbol in Pico SDK's vector table.
@@ -569,13 +684,38 @@ int main(void) {
         set_sys_clock_khz(252 * 1000, true);
     }
 
-    /* Remap XIP ATRANS3 so that address 0x10FFF000 maps to flash 0x3FF000.
-     * MOS2 apps read function pointers from a sys_table at 0x10FFF000.
-     * On 4MB flash, that address is beyond physical flash (returns 0xFF).
-     * ATRANS3 covers 0x10C00000–0x10FFFFFF. Setting BASE=0 maps this
-     * window to flash 0x000000–0x3FFFFF, so 0x10FFF000 → flash 0x3FF000. */
+    /* ATRANS3: With 16MB flash, 0x10FFF000 maps directly to flash 0xFFF000.
+     * Set identity mapping for the top 4MB window (0x10C00000–0x10FFFFFF
+     * → flash 0xC00000–0xFFFFFF) so the sys_table at 0x10FFF000 works. */
     qmi_hw->atrans[3] = (0x400u << QMI_ATRANS3_SIZE_LSB)
-                       | (0x000u << QMI_ATRANS3_BASE_LSB);
+                       | (0xC00u << QMI_ATRANS3_BASE_LSB);
+
+    /* Clear SRAM UI-force magic left over from Space-escape boot */
+    *SRAM_UIFORCE_ADDR = 0;
+
+    /* Fix RAM vector table for Space-escape boot scenario.
+     * After firmware flash, sector 0 at XIP offset 0 contains the firmware's
+     * vector table (with only word[1] patched to FRANK OS Reset).  The crt0
+     * runtime_init copies those firmware vectors into the RAM vector table.
+     * On normal boot the vectors at offset 0 are FRANK OS's own, so the
+     * copy is correct.  After firmware flash + Space escape, they're the
+     * firmware's vectors, so FreeRTOS exception handlers (SVCall, PendSV,
+     * SysTick) point to firmware code — causing configASSERT failure in
+     * xPortStartScheduler and a hang.
+     *
+     * Fix by writing the correct handler addresses unconditionally.
+     * On normal boot this is a harmless no-op (same values). */
+    {
+        extern uint32_t ram_vector_table[];
+        extern void isr_svcall(void);
+        extern void isr_pendsv(void);
+        extern void isr_systick(void);
+        /* isr_hardfault is defined in this file (below) */
+        ram_vector_table[3]  = (uint32_t)(uintptr_t)isr_hardfault;
+        ram_vector_table[11] = (uint32_t)(uintptr_t)isr_svcall;
+        ram_vector_table[14] = (uint32_t)(uintptr_t)isr_pendsv;
+        ram_vector_table[15] = (uint32_t)(uintptr_t)isr_systick;
+    }
 
     stdio_init_all();
     for (int i = 0; i < 8; i++) { sleep_ms(500); }

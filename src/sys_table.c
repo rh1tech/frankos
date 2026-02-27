@@ -82,8 +82,8 @@ FATFS* get_mount_fs(); // only one FS is supported foe now
 static void safe_qsort(void *base, size_t nmemb, size_t size,
                         int (*compar)(const void *, const void *)) {
     uintptr_t p = (uintptr_t)(void *)compar;
-    /* Valid code lives in flash (0x10000000) or SRAM (0x20000000) */
-    bool ok = (p >= 0x10000000u && p < 0x10400000u)
+    /* Valid code lives in flash (0x10000000–0x11000000) or SRAM (0x20000000) */
+    bool ok = (p >= 0x10000000u && p < 0x11000000u)
            || (p >= 0x20000000u && p < 0x20080000u);
     if (!ok) {
         printf("[safe_qsort] BAD cmp=%p — skipping sort\n", (void *)compar);

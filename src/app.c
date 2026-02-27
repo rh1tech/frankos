@@ -26,6 +26,7 @@
 #include "dialog.h"
 #include "window.h"
 #include "swap.h"
+#include <hardware/watchdog.h>
 
 #define APP_TASK_PRIORITY 1
 
@@ -53,7 +54,7 @@ typedef struct {
     uint32_t magicEnd;
 } UF2_Block_t;
 
-uint32_t flash_size = 4 * 1024 * 1024;  /* RP2350 Pico 2: 4MB flash */
+uint32_t flash_size = 16 * 1024 * 1024;  /* FRANK M2: 16MB flash */
 
 static void __in_hfa() debug_sections(sect_entry_t* sect_entries) {
     if (sect_entries) {
@@ -151,6 +152,12 @@ void __in_hfa() link_firmware(FIL* pf, const char* pathname) {
     f_close(pf);
 }
 
+/* Over-mode flash constants */
+#define ZERO_BLOCK_OFFSET   ((16ul << 20) - (1ul << 20) - (4ul << 10))  /* 0xEFF000 */
+#define ZERO_BLOCK_ADDRESS  (XIP_BASE + ZERO_BLOCK_OFFSET)              /* 0x10EFF000 */
+#define FLASH_MAGIC_OVER    0x3836d91au
+#define SRAM_MAGIC_BOOT     0x383da910u
+
 bool __not_in_flash_func(load_firmware_sram)(char* pathname) {
     FILINFO* pfi = (FILINFO*)pvPortMalloc(sizeof(FILINFO));
     FIL* pf = (FIL*)pvPortMalloc(sizeof(FIL));
@@ -175,28 +182,51 @@ bool __not_in_flash_func(load_firmware_sram)(char* pathname) {
             break;
         }
         if (sz == 0) { // replace target
-            flash_target_offset = next_flash_target_offset; 
+            flash_target_offset = next_flash_target_offset;
             fgoutf(get_stdout(), "Replace targe offset: %ph\n", flash_target_offset);
             continue;
         }
         already_written += FLASH_SECTOR_SIZE;
         uint32_t pcts = already_written * 100 / expected_to_write_size;
         if (pcts > 100) pcts = 100;
-        if (flash_target_offset < (FIRMWARE_OFFSET << 10)) {
-            fgoutf(get_stdout(), "Unexpected offset: %ph (%d%%). Breaking the process...\n", flash_target_offset, pcts);
-            goto err;
+
+        /* Sector 0 handling: save original to ZERO_BLOCK, patch Reset vector */
+        if (flash_target_offset == 0) {
+            /* Save original sector 0 to ZERO_BLOCK with magic marker */
+            uint8_t *zb_buf = (uint8_t *)pvPortMalloc(FLASH_SECTOR_SIZE);
+            if (!zb_buf) goto err;
+            memcpy(zb_buf, buffer, FLASH_SECTOR_SIZE);
+            /* Set magic marker at word[1023] */
+            ((uint32_t *)zb_buf)[1023] = FLASH_MAGIC_OVER;
+            /* Flash ZERO_BLOCK */
+            fgoutf(get_stdout(), "Saving sector 0 to ZERO_BLOCK\n");
+            gpio_put(PICO_DEFAULT_LED_PIN, true);
+            multicore_lockout_start_blocking();
+            uint32_t ints = save_and_disable_interrupts();
+            flash_range_erase(ZERO_BLOCK_OFFSET, FLASH_SECTOR_SIZE);
+            flash_range_program(ZERO_BLOCK_OFFSET, zb_buf, FLASH_SECTOR_SIZE);
+            restore_interrupts(ints);
+            multicore_lockout_end_blocking();
+            gpio_put(PICO_DEFAULT_LED_PIN, false);
+            vPortFree(zb_buf);
+
+            /* Patch word[1] (Reset vector) to FRANK OS's own Reset handler.
+             * This is read from the current vector table at flash offset 0. */
+            ((uint32_t *)buffer)[1] = *(uint32_t *)(XIP_BASE + 4);
         }
+
         fgoutf(get_stdout(), "Erase and write to flash, offset: %ph (%d%%)\n", flash_target_offset, pcts);
         flash_block(buffer, flash_target_offset);
         flash_target_offset = next_flash_target_offset;
     }
     vPortFree(alloc);
     f_close(pf);
-    goutf("Write FIRMWARE MARKER '%s' to '%s'\n", pathname, FIRMWARE_MARKER_FN);
-    link_firmware(pf, pathname);
-    goutf("Reboot is required!\n");
-    reboot_is_requested = true;
+
+    /* Set SRAM magic and reboot via watchdog — firmware runs on next boot */
+    *(volatile uint32_t *)(0x20000000 + (512 << 10) - 8) = SRAM_MAGIC_BOOT;
+    watchdog_enable(100, true);
     while(true) ;
+
 err:
     vPortFree(alloc);
     f_close(pf);
@@ -210,8 +240,9 @@ bool __in_hfa() load_firmware(char* pathname) {
     FILINFO* pfileinfo = pvPortMalloc(sizeof(FILINFO));
     f_stat(pathname, pfileinfo);
     size_t sz = (size_t)((pfileinfo->fsize >> 1) & 0xFFFFFFFF);
-    size_t max = (flash_size - (128l << 10));
-    if (max < sz) { // TODO: free, ...
+    /* Firmware area: offset 0 to ZERO_BLOCK (0xEFF000 = ~15MB) */
+    size_t max = ZERO_BLOCK_OFFSET;
+    if (max < sz) {
         goutf("ERROR: Firmware too large: %dK (%dK max) Canceled!\n", (sz >> 10), (max >> 10));
         vPortFree(pfileinfo);
         return false;

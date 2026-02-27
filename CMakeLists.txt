@@ -186,11 +186,11 @@ target_link_libraries(frankos
     FreeRTOS-Kernel-Heap4
 )
 
-# Place MOS2 system function table at flash address 0x103FF000.
-# On RP2350 with 4MB flash, reads from 0x10FFF000 (the canonical MOS2 address)
-# wrap to physical flash offset 0x3FF000, which is where this table lives.
+# Custom linker script: OS code at top of 16MB flash (0x10F00000),
+# sys_table at 0x10FFF000, ZERO_BLOCK at 0x10EFF000.
+configure_file(${CMAKE_CURRENT_LIST_DIR}/memmap.ld.in ${CMAKE_BINARY_DIR}/memmap.ld @ONLY)
+pico_set_linker_script(frankos ${CMAKE_BINARY_DIR}/memmap.ld)
 target_link_options(frankos PRIVATE
-    -Wl,--section-start=.sys_table=0x103FF000
     -Wl,--undefined=sys_table_ptrs
 )
 
