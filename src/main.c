@@ -156,8 +156,6 @@ static void before_main(void) {
     /* ZERO_BLOCK not valid — fall through to normal FRANK OS boot */
 }
 
-#define LED_PIN PICO_DEFAULT_LED_PIN
-
 /* ---- Static allocation support for FreeRTOS ---- */
 static StaticTask_t idle_tcb;
 static StackType_t  idle_stack[configMINIMAL_STACK_SIZE];
@@ -188,11 +186,6 @@ static volatile bool g_video_dirty = true;
  * the user first moves the mouse.  Non-static so wm_composite can skip
  * stamping the cursor while hidden. */
 volatile bool boot_cursor_hidden = false;
-
-static inline void led_init(void) {
-    gpio_init(LED_PIN);
-    gpio_set_dir(LED_PIN, GPIO_OUT);
-}
 
 /*==========================================================================
  * Crash dump — stored in .uninitialized_data so it survives warm resets
@@ -344,15 +337,6 @@ static void usb_service_task(void *params) {
     }
 }
 
-static void heartbeat_task(void *params) {
-    (void)params;
-    for (;;) {
-        gpio_put(LED_PIN, 1);
-        vTaskDelay(pdMS_TO_TICKS(500));
-        gpio_put(LED_PIN, 0);
-        vTaskDelay(pdMS_TO_TICKS(500));
-    }
-}
 
 /*==========================================================================
  * Compositor task — runs on Core 0 under FreeRTOS.
@@ -718,9 +702,6 @@ int main(void) {
     }
 
     stdio_init_all();
-    for (int i = 0; i < 8; i++) { sleep_ms(500); }
-
-    led_init();
 
     // Check for saved HardFault info from previous crash
     if (g_crash_dump.magic == 0xDEAD0001) {
@@ -809,7 +790,6 @@ int main(void) {
     wm_composite();
 
     xTaskCreate(usb_service_task, "usb", 256, NULL, configMAX_PRIORITIES - 1, NULL);
-    xTaskCreate(heartbeat_task, "heartbeat", 512, NULL, 1, NULL);
     xTaskCreate(input_task, "input", 1024, NULL, 3, NULL);
     xTaskCreate(compositor_task, "compositor", 1024, NULL, 2, NULL);
 
