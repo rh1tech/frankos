@@ -272,6 +272,9 @@ void deliver_signals(cmd_ctx_t *ctx)
                 continue;
 
             if (h == SIG_DFL) {
+                /* POSIX: SIGWINCH and SIGCHLD default action is ignore */
+                if (sig == 28 /* SIGWINCH */ || sig == 17 /* SIGCHLD */)
+                    continue;
                 ctx->ret_code = sig;
                 ctx->stage = ZOMBIE;
                 if (ctx->parent_task)

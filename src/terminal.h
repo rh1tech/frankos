@@ -20,18 +20,23 @@
 #include "timers.h"
 
 /* Terminal console dimensions (8x16 font in 560x320 client area) */
-#define TERM_COLS   70
-#define TERM_ROWS   20
+#define TERM_COLS   70   /* default columns */
+#define TERM_ROWS   20   /* default rows */
 #define TERM_FONT_W  8
 #define TERM_FONT_H  16
+
+/* Maximum grid dimensions (fullscreen 640x480 borderless) */
+#define TERM_MAX_COLS  80
+#define TERM_MAX_ROWS  30
+#define TERM_MAX_TEXTBUF_SIZE  (TERM_MAX_COLS * TERM_MAX_ROWS * 2)  /* 4800 bytes */
 
 /*
  * Text-mode buffer layout (MOS2-compatible):
  *   Each cell is 2 bytes: [character][color_attribute]
  *   color_attribute = (bg << 4) | (fg & 0x0F)
- *   Row-major: cell(col, row) = buf[row * TERM_COLS * 2 + col * 2]
+ *   Row-major: cell(col, row) = buf[row * cols * 2 + col * 2]
  */
-#define TERM_TEXTBUF_SIZE   (TERM_COLS * TERM_ROWS * 2)  /* 4800 bytes */
+#define TERM_TEXTBUF_SIZE   (TERM_COLS * TERM_ROWS * 2)  /* default size */
 
 /* Maximum stdin waiters per terminal (MOS2 apps) */
 #define MAX_STDIN_WAITERS 4
@@ -49,9 +54,17 @@ struct terminal {
     uint8_t *textbuf;
     size_t   textbuf_size;
 
+    /* Current grid dimensions (dynamic — changes on resize) */
+    int      cols, rows;
+
     int      cursor_col, cursor_row;
     uint8_t  fg_color, bg_color;
     bool     cursor_visible;
+
+    /* Fullscreen state */
+    bool     fullscreen;
+    rect_t   pre_fs_rect;
+    uint16_t pre_fs_flags;
 
     /* Keyboard input ring buffer (for terminal_getch) */
     uint8_t  input_buf[64];
@@ -122,6 +135,16 @@ terminal_t *terminal_get_active(void);
 /* Text-mode buffer access (for MOS2 get_buffer() / save/restore console) */
 uint8_t *terminal_get_textbuf(terminal_t *t);
 size_t   terminal_get_textbuf_size(terminal_t *t);
+
+/* Resize terminal grid to fit new client dimensions */
+void terminal_resize(terminal_t *t, int client_w, int client_h);
+
+/* Toggle fullscreen mode (Alt+Enter) */
+void terminal_toggle_fullscreen(terminal_t *t);
+
+/* Query current grid dimensions */
+int terminal_get_cols(terminal_t *t);
+int terminal_get_rows(terminal_t *t);
 
 /* Force repaint of the active terminal (call after direct textbuf writes) */
 void terminal_invalidate_active(void);

@@ -294,6 +294,17 @@ void wm_maximize_window(hwnd_t hwnd) {
     win->frame = (rect_t){ 0, 0, DISPLAY_WIDTH, taskbar_work_area_height() };
     win->flags |= WF_DIRTY | WF_FRAME_DIRTY;
     wm_add_expose_rect(&old_frame);
+
+    /* Post WM_SIZE with new client dimensions */
+    if (win->frame.w != old_frame.w || win->frame.h != old_frame.h) {
+        window_event_t ev;
+        memset(&ev, 0, sizeof(ev));
+        ev.type = WM_SIZE;
+        rect_t cr = theme_client_rect(&win->frame, win->flags);
+        ev.size.w = cr.w;
+        ev.size.h = cr.h;
+        wm_post_event(hwnd, &ev);
+    }
 }
 
 void wm_restore_window(hwnd_t hwnd) {
@@ -307,6 +318,17 @@ void wm_restore_window(hwnd_t hwnd) {
     win->flags |= WF_VISIBLE | WF_DIRTY | WF_FRAME_DIRTY;
     wm_add_expose_rect(&old_frame);
     taskbar_invalidate();
+
+    /* Post WM_SIZE with new client dimensions */
+    if (win->frame.w != old_frame.w || win->frame.h != old_frame.h) {
+        window_event_t ev;
+        memset(&ev, 0, sizeof(ev));
+        ev.type = WM_SIZE;
+        rect_t cr = theme_client_rect(&win->frame, win->flags);
+        ev.size.w = cr.w;
+        ev.size.h = cr.h;
+        wm_post_event(hwnd, &ev);
+    }
 }
 
 void wm_move_window(hwnd_t hwnd, int16_t x, int16_t y) {
@@ -344,17 +366,34 @@ void wm_set_window_rect(hwnd_t hwnd, int16_t x, int16_t y,
     if (!valid_hwnd(hwnd)) return;
 
     /* Clamp position: x >= 0 to prevent wd_fb_ptr wrap-around.
-     * Keep at least 60px visible on right edge, title bar reachable. */
+     * Keep at least 60px visible on right edge, title bar reachable.
+     * Borderless windows (fullscreen) are allowed y=0 with full height. */
     if (x < 0) x = 0;
     if (x > DISPLAY_WIDTH - 60)   x = DISPLAY_WIDTH - 60;
     if (y < 0) y = 0;
-    int16_t max_y = taskbar_work_area_height() - THEME_TITLE_HEIGHT;
-    if (y > max_y) y = max_y;
+    if (windows[hwnd - 1].flags & WF_BORDER) {
+        int16_t max_y = taskbar_work_area_height() - THEME_TITLE_HEIGHT;
+        if (y > max_y) y = max_y;
+    }
 
+    int16_t old_w = windows[hwnd - 1].frame.w;
+    int16_t old_h = windows[hwnd - 1].frame.h;
     rect_t old_frame = windows[hwnd - 1].frame;
     windows[hwnd - 1].frame = (rect_t){ x, y, w, h };
     windows[hwnd - 1].flags |= WF_DIRTY | WF_FRAME_DIRTY;
     wm_add_expose_rect(&old_frame);
+
+    /* Post WM_SIZE if dimensions changed */
+    if (w != old_w || h != old_h) {
+        window_event_t ev;
+        memset(&ev, 0, sizeof(ev));
+        ev.type = WM_SIZE;
+        rect_t cr = theme_client_rect(&windows[hwnd - 1].frame,
+                                       windows[hwnd - 1].flags);
+        ev.size.w = cr.w;
+        ev.size.h = cr.h;
+        wm_post_event(hwnd, &ev);
+    }
 }
 
 void wm_set_focus(hwnd_t hwnd) {

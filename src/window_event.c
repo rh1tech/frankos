@@ -389,6 +389,11 @@ void drag_overlay_stamp(const rect_t *r) {
 
 void drag_overlay_erase(void) {
     if (!drag_ol_active) return;
+    /* Erase cursor first — its save-under may contain XOR'd outline
+     * pixels.  Restoring the cursor cleans the buffer so the outline
+     * XOR-erase undoes correctly.  cursor_overlay_erase is a no-op
+     * when the cursor isn't stamped; re-stamp happens later. */
+    cursor_overlay_erase();
     show_xor_outline(&drag_ol_rect);
     drag_ol_active = false;
 }
@@ -419,7 +424,14 @@ void wm_handle_mouse_input(uint8_t type, int16_t x, int16_t y, uint8_t buttons) 
             if (!cursor_overlay_is_locked()) {
                 cursor_overlay_erase();
                 drag_overlay_erase();
+            } else {
+                /* Compositor holds the lock — mark overlay inactive so the
+                 * next compositor cycle won't try to XOR-erase pixels that
+                 * the full repaint below will overwrite.  This prevents
+                 * stale XOR artifacts from the outline. */
+                drag_overlay_reset();
             }
+            bool resized = (drag_mode == DRAG_RESIZE);
             wm_set_window_rect(drag_hwnd, drag_rect.x, drag_rect.y,
                                 drag_rect.w, drag_rect.h);
             /* Resume the app after the window has been repositioned */
@@ -427,6 +439,10 @@ void wm_handle_mouse_input(uint8_t type, int16_t x, int16_t y, uint8_t buttons) 
             drag_mode = DRAG_NONE;
             drag_hwnd = HWND_NULL;
             cursor_set_type(CURSOR_ARROW);
+            /* After drag-resize, force a full repaint to clear any XOR
+             * outline artifacts and stale pixels from the old size. */
+            if (resized)
+                wm_force_full_repaint();
             if (!cursor_overlay_is_locked()) {
                 int16_t cx, cy;
                 wm_get_cursor_pos(&cx, &cy);

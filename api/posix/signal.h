@@ -51,6 +51,7 @@ typedef void (*sighandler_t)(int);
 #define SIGALRM     14
 #define SIGTERM     15
 #define SIGCHLD     17
+#define SIGWINCH    28  /* terminal window size changed */
 
 #define MAX_SIG     32
 

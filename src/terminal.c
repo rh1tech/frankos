@@ -23,6 +23,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "psram.h"
+#include "cmd.h"
 #include "pico/platform.h"
 
 /*==========================================================================
@@ -39,10 +40,10 @@
 /* Only allocate the actual text content (70*20*2 = 2800 bytes).
  * op_console is clamped to get_buffer_size() so no overrun occurs. */
 
-/* Buffer access macros */
-#define TB_OFF(row, col)   ((row) * TERM_COLS * 2 + (col) * 2)
-#define TB_CHAR(t, r, c)   ((t)->textbuf[TB_OFF(r, c)])
-#define TB_ATTR(t, r, c)   ((t)->textbuf[TB_OFF(r, c) + 1])
+/* Buffer access macros — use dynamic cols from terminal */
+#define TB_OFF(t, row, col)   ((row) * (t)->cols * 2 + (col) * 2)
+#define TB_CHAR(t, r, c)   ((t)->textbuf[TB_OFF(t, r, c)])
+#define TB_ATTR(t, r, c)   ((t)->textbuf[TB_OFF(t, r, c) + 1])
 #define TB_PACK(fg, bg)    (((bg) << 4) | ((fg) & 0x0F))
 #define TB_FG(attr)        ((attr) & 0x0F)
 #define TB_BG(attr)        ((attr) >> 4)
@@ -52,18 +53,20 @@
  *=========================================================================*/
 
 static void __not_in_flash_func(terminal_scroll_up)(terminal_t *t) {
-    /* Move rows 1..TERM_ROWS-1 up to rows 0..TERM_ROWS-2.
+    /* Move rows 1..rows-1 up to rows 0..rows-2.
      * Manual loop instead of memmove() because memmove is in flash and
      * calling it on a PSRAM buffer causes CS0 (flash instruction fetch) +
      * CS1 (PSRAM data) QMI bus contention that hangs the system. */
+    int cols = t->cols;
+    int rows = t->rows;
     volatile uint8_t *dst = t->textbuf;
-    volatile uint8_t *src = t->textbuf + TERM_COLS * 2;
-    int n = TERM_COLS * 2 * (TERM_ROWS - 1);
+    volatile uint8_t *src = t->textbuf + cols * 2;
+    int n = cols * 2 * (rows - 1);
     for (int i = 0; i < n; i++) dst[i] = src[i];
     /* Clear last row */
     uint8_t attr = TB_PACK(t->fg_color, t->bg_color);
-    uint8_t *last = t->textbuf + TERM_COLS * 2 * (TERM_ROWS - 1);
-    for (int i = 0; i < TERM_COLS; i++) {
+    uint8_t *last = t->textbuf + cols * 2 * (rows - 1);
+    for (int i = 0; i < cols; i++) {
         last[i * 2]     = ' ';
         last[i * 2 + 1] = attr;
     }
@@ -119,11 +122,15 @@ terminal_t *terminal_get_task_terminal(void) {
  * via memcpy, then render entirely from SRAM.
  *=========================================================================*/
 
-static uint8_t paint_shadow[TERM_TEXTBUF_SIZE];
+static uint8_t paint_shadow[TERM_MAX_TEXTBUF_SIZE];
 
 static void __not_in_flash_func(terminal_paint)(hwnd_t hwnd) {
     terminal_t *t = terminal_from_hwnd(hwnd);
     if (!t || !t->textbuf) return;
+
+    int term_cols = t->cols;
+    int term_rows = t->rows;
+    int bufsize = term_cols * term_rows * 2;
 
     /* Snapshot textbuf into SRAM — one bulk copy instead of thousands
      * of individual PSRAM reads during the rendering loop.
@@ -134,7 +141,7 @@ static void __not_in_flash_func(terminal_paint)(hwnd_t hwnd) {
      * into a memcpy call. */
     {
         volatile uint8_t *src = t->textbuf;
-        for (int i = 0; i < TERM_TEXTBUF_SIZE; i++)
+        for (int i = 0; i < bufsize; i++)
             paint_shadow[i] = src[i];
     }
 
@@ -153,15 +160,15 @@ static void __not_in_flash_func(terminal_paint)(hwnd_t hwnd) {
     }
 
     /* Draw character grid using fast glyph blitter */
-    for (int row = 0; row < TERM_ROWS; row++) {
+    for (int row = 0; row < term_rows; row++) {
         int sy = oy + row * TERM_FONT_H;
         if (sy + TERM_FONT_H <= 0 || sy >= FB_HEIGHT) continue;
 
-        for (int col = 0; col < TERM_COLS; col++) {
+        for (int col = 0; col < term_cols; col++) {
             int sx = ox + col * TERM_FONT_W;
             if (sx + TERM_FONT_W <= 0 || sx >= DISPLAY_WIDTH) continue;
 
-            int off = (row * TERM_COLS + col) * 2;
+            int off = (row * term_cols + col) * 2;
             uint8_t ch   = paint_shadow[off];
             uint8_t attr = paint_shadow[off + 1];
             uint8_t fg   = TB_FG(attr);
@@ -193,8 +200,8 @@ static void __not_in_flash_func(terminal_paint)(hwnd_t hwnd) {
 
     /* Draw blinking DOS-style underline cursor (bottom 2 scanlines) */
     if (t->cursor_visible &&
-        t->cursor_col >= 0 && t->cursor_col < TERM_COLS &&
-        t->cursor_row >= 0 && t->cursor_row < TERM_ROWS) {
+        t->cursor_col >= 0 && t->cursor_col < term_cols &&
+        t->cursor_row >= 0 && t->cursor_row < term_rows) {
         int cx = ox + t->cursor_col * TERM_FONT_W;
         int cy = oy + t->cursor_row * TERM_FONT_H;
         display_hline_safe(cx, cy + TERM_FONT_H - 2, TERM_FONT_W, t->fg_color);
@@ -212,6 +219,14 @@ static void __not_in_flash_func(terminal_paint)(hwnd_t hwnd) {
 
 /* Force-close: signal shell, destroy window immediately */
 static void terminal_force_close(terminal_t *t, hwnd_t hwnd) {
+    /* If fullscreen, restore border/menubar so desktop repaints properly */
+    if (t->fullscreen) {
+        window_t *w = wm_get_window(hwnd);
+        if (w) w->flags |= (t->pre_fs_flags & (WF_BORDER | WF_MENUBAR));
+        t->fullscreen = false;
+        wm_force_full_repaint();
+    }
+
     t->closing = true;
     if (t->input_sem) xSemaphoreGive(t->input_sem);
     if (t->blink_timer) {
@@ -236,7 +251,16 @@ static bool terminal_event(hwnd_t hwnd, const window_event_t *event) {
         terminal_input_push(t, (uint8_t)event->charev.ch);
         return true;
 
+    case WM_SIZE:
+        terminal_resize(t, event->size.w, event->size.h);
+        return true;
+
     case WM_KEYDOWN:
+        /* Alt+Enter: toggle fullscreen (before Enter→'\n' mapping) */
+        if (event->key.scancode == 0x28 && (event->key.modifiers & KMOD_ALT)) {
+            terminal_toggle_fullscreen(t);
+            return true;
+        }
         switch (event->key.scancode) {
         case 0x28: terminal_input_push(t, '\n');  return true;
         case 0x29: terminal_input_push(t, 0x1B);  return true;
@@ -305,12 +329,14 @@ hwnd_t terminal_create(void) {
     t->fg_color = COLOR_WHITE;
     t->bg_color = COLOR_BLACK;
     t->cursor_visible = true;
+    t->cols = TERM_COLS;
+    t->rows = TERM_ROWS;
 
     /* Allocate text-mode buffer.
      * TODO: PSRAM textbufs cause QMI bus hangs when ISRs fire during
      * uncached PSRAM access (write buffer drain + flash fetch contention).
      * Force SRAM until the QMI interleaving issue is resolved. */
-    t->textbuf_size = TERM_TEXTBUF_SIZE;
+    t->textbuf_size = TERM_COLS * TERM_ROWS * 2;
 #if 0  /* PSRAM disabled — causes bus hang, see above */
     if (psram_is_available())
         t->textbuf = (uint8_t *)psram_alloc(t->textbuf_size);
@@ -325,7 +351,7 @@ hwnd_t terminal_create(void) {
            t->textbuf, (unsigned)t->textbuf_size);
     /* Fill with spaces, white-on-black */
     uint8_t attr = TB_PACK(COLOR_WHITE, COLOR_BLACK);
-    for (int i = 0; i < TERM_COLS * TERM_ROWS; i++) {
+    for (int i = 0; i < t->cols * t->rows; i++) {
         t->textbuf[i * 2]     = ' ';
         t->textbuf[i * 2 + 1] = attr;
     }
@@ -345,7 +371,7 @@ hwnd_t terminal_create(void) {
     t->hwnd = wm_create_window(
         10, 10, outer_w, outer_h,
         "Terminal",
-        WF_CLOSABLE | WF_MOVABLE | WF_BORDER | WF_MENUBAR,
+        WF_CLOSABLE | WF_MOVABLE | WF_RESIZABLE | WF_BORDER | WF_MENUBAR,
         terminal_event,
         terminal_paint
     );
@@ -454,19 +480,19 @@ void __not_in_flash_func(terminal_putc)(terminal_t *t, char c) {
         break;
     case '\t':
         t->cursor_col = (t->cursor_col + 8) & ~7;
-        if (t->cursor_col >= TERM_COLS) {
+        if (t->cursor_col >= t->cols) {
             t->cursor_col = 0;
             t->cursor_row++;
         }
         break;
     default:
-        if (t->cursor_col >= TERM_COLS) {
+        if (t->cursor_col >= t->cols) {
             t->cursor_col = 0;
             t->cursor_row++;
         }
-        if (t->cursor_row >= TERM_ROWS) {
+        if (t->cursor_row >= t->rows) {
             terminal_scroll_up(t);
-            t->cursor_row = TERM_ROWS - 1;
+            t->cursor_row = t->rows - 1;
         }
         TB_CHAR(t, t->cursor_row, t->cursor_col) = (uint8_t)c;
         TB_ATTR(t, t->cursor_row, t->cursor_col) =
@@ -476,9 +502,9 @@ void __not_in_flash_func(terminal_putc)(terminal_t *t, char c) {
     }
 
     /* Handle scroll after newline/tab */
-    if (t->cursor_row >= TERM_ROWS) {
+    if (t->cursor_row >= t->rows) {
         terminal_scroll_up(t);
-        t->cursor_row = TERM_ROWS - 1;
+        t->cursor_row = t->rows - 1;
     }
 
     wm_invalidate(t->hwnd);
@@ -503,7 +529,7 @@ void __not_in_flash_func(terminal_clear)(terminal_t *t, uint8_t color) {
     if (!t || !t->textbuf) return;
     t->bg_color = color;
     uint8_t attr = TB_PACK(t->fg_color, color);
-    for (int i = 0; i < TERM_COLS * TERM_ROWS; i++) {
+    for (int i = 0; i < t->cols * t->rows; i++) {
         t->textbuf[i * 2]     = ' ';
         t->textbuf[i * 2 + 1] = attr;
     }
@@ -514,8 +540,8 @@ void __not_in_flash_func(terminal_clear)(terminal_t *t, uint8_t color) {
 
 void terminal_set_cursor(terminal_t *t, int col, int row) {
     if (!t) return;
-    if (col >= 0 && col < TERM_COLS) t->cursor_col = col;
-    if (row >= 0 && row < TERM_ROWS) t->cursor_row = row;
+    if (col >= 0 && col < t->cols) t->cursor_col = col;
+    if (row >= 0 && row < t->rows) t->cursor_row = row;
 }
 
 void terminal_set_color(terminal_t *t, uint8_t fg, uint8_t bg) {
@@ -529,12 +555,12 @@ void terminal_set_color(terminal_t *t, uint8_t fg, uint8_t bg) {
 void __not_in_flash_func(terminal_draw_text)(terminal_t *t, const char *str,
                         int col, int row, uint8_t fg, uint8_t bg) {
     if (!t || !t->textbuf || !str) return;
-    if (row < 0 || row >= TERM_ROWS) return;
+    if (row < 0 || row >= t->rows) return;
     uint8_t attr = TB_PACK(fg & 0x0F, bg & 0x0F);
     for (int i = 0; str[i] != '\0'; i++) {
         int c = col + i;
         if (c < 0) continue;
-        if (c >= TERM_COLS) break;
+        if (c >= t->cols) break;
         TB_CHAR(t, row, c) = (uint8_t)str[i];
         TB_ATTR(t, row, c) = attr;
     }
@@ -565,6 +591,118 @@ int terminal_getch_now(terminal_t *t) {
     t->in_tail = (t->in_tail + 1) & 63;
     return ch;
 }
+
+/*==========================================================================
+ * Resize — adjust grid to new client area
+ *=========================================================================*/
+
+void terminal_resize(terminal_t *t, int client_w, int client_h) {
+    if (!t || !t->textbuf) return;
+
+    int new_cols = client_w / TERM_FONT_W;
+    int new_rows = client_h / TERM_FONT_H;
+
+    /* Clamp to valid range */
+    if (new_cols < 10) new_cols = 10;
+    if (new_cols > TERM_MAX_COLS) new_cols = TERM_MAX_COLS;
+    if (new_rows < 4) new_rows = 4;
+    if (new_rows > TERM_MAX_ROWS) new_rows = TERM_MAX_ROWS;
+
+    /* No change? */
+    if (new_cols == t->cols && new_rows == t->rows) return;
+
+    int old_cols = t->cols;
+    int old_rows = t->rows;
+
+    /* Allocate new textbuf */
+    size_t new_size = new_cols * new_rows * 2;
+    uint8_t *new_buf = (uint8_t *)pvPortMalloc(new_size);
+    if (!new_buf) return;
+
+    /* Fill with spaces using current colors */
+    uint8_t attr = TB_PACK(t->fg_color, t->bg_color);
+    for (int i = 0; i < new_cols * new_rows; i++) {
+        new_buf[i * 2]     = ' ';
+        new_buf[i * 2 + 1] = attr;
+    }
+
+    /* Copy existing content row-by-row (min of old/new dimensions) */
+    int copy_cols = old_cols < new_cols ? old_cols : new_cols;
+    int copy_rows = old_rows < new_rows ? old_rows : new_rows;
+    uint8_t *old_buf = t->textbuf;
+    for (int r = 0; r < copy_rows; r++) {
+        volatile uint8_t *src = old_buf + r * old_cols * 2;
+        uint8_t *dst = new_buf + r * new_cols * 2;
+        for (int i = 0; i < copy_cols * 2; i++)
+            dst[i] = src[i];
+    }
+
+    /* Swap: update textbuf pointer first (atomic on ARM), then dims */
+    t->textbuf = new_buf;
+    t->cols = new_cols;
+    t->rows = new_rows;
+    t->textbuf_size = new_size;
+
+    /* Free old buffer */
+    psram_free(old_buf);
+
+    /* Clamp cursor */
+    if (t->cursor_col >= new_cols) t->cursor_col = new_cols - 1;
+    if (t->cursor_row >= new_rows) t->cursor_row = new_rows - 1;
+
+    /* Full repaint — resize is a structural change that needs the frame
+     * background refilled to clear stale pixels outside the new grid. */
+    wm_force_full_repaint();
+
+    /* Send SIGWINCH to all processes running on this terminal so apps
+     * like mc re-query dimensions and redraw at the new size. */
+#define SIGWINCH 28
+    if (pids) {
+        for (size_t i = 1; i < pids->size; i++) {
+            cmd_ctx_t *c = (cmd_ctx_t *)pids->p[i];
+            if (c && c->term == t) {
+                c->sig_pending |= (1U << SIGWINCH);
+                xTaskNotifyGive(c->task);
+            }
+        }
+    }
+#undef SIGWINCH
+}
+
+/*==========================================================================
+ * Fullscreen toggle (Alt+Enter)
+ *=========================================================================*/
+
+void terminal_toggle_fullscreen(terminal_t *t) {
+    if (!t || t->hwnd == HWND_NULL) return;
+
+    window_t *win = wm_get_window(t->hwnd);
+    if (!win) return;
+
+    if (!t->fullscreen) {
+        /* Enter fullscreen: save state, remove decorations, expand */
+        t->pre_fs_rect = win->frame;
+        t->pre_fs_flags = win->flags;
+        win->flags &= ~(WF_BORDER | WF_MENUBAR);
+        wm_set_window_rect(t->hwnd, 0, 0, DISPLAY_WIDTH, DISPLAY_HEIGHT);
+        t->fullscreen = true;
+        wm_force_full_repaint();
+    } else {
+        /* Exit fullscreen: restore decorations and rect */
+        win->flags |= (t->pre_fs_flags & (WF_BORDER | WF_MENUBAR));
+        wm_set_window_rect(t->hwnd, t->pre_fs_rect.x, t->pre_fs_rect.y,
+                           t->pre_fs_rect.w, t->pre_fs_rect.h);
+        t->fullscreen = false;
+        wm_force_full_repaint();
+    }
+}
+
+/*==========================================================================
+ * Grid dimension queries
+ *=========================================================================*/
+
+int terminal_get_cols(terminal_t *t) { return t ? t->cols : TERM_COLS; }
+int terminal_get_rows(terminal_t *t) { return t ? t->rows : TERM_ROWS; }
 
 terminal_t *terminal_get_active(void) {
     /* 1. Try TLS slot for current task */

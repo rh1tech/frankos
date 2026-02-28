@@ -30,6 +30,7 @@
 #include "keyboard.h"
 #include "font.h"
 #include "psram.h"
+#include "cmd.h"
 
 /*==========================================================================
  * Global variable: keyboard character (MOS2 keyboard.c uses this)
@@ -128,7 +129,14 @@ int __getc(FIL *f) {
     return (int)__getch();
 }
 
+void deliver_signals(cmd_ctx_t *ctx);
+
 char getch_now(void) {
+    /* Deliver any pending POSIX signals (e.g. SIGWINCH from terminal resize) */
+    cmd_ctx_t *ctx = get_cmd_ctx();
+    if (ctx && ctx->sig_pending)
+        deliver_signals(ctx);
+
     /* MOS2 mechanism: non-blocking read of mos2_c set by scancode handler */
     terminal_t *t = terminal_get_active();
     if (t && t->mos2_c) {
@@ -148,8 +156,14 @@ char getch_now(void) {
  * Console info
  *=========================================================================*/
 
-uint32_t get_console_width(void) { return TERM_COLS; }
-uint32_t get_console_height(void) { return TERM_ROWS; }
+uint32_t get_console_width(void) {
+    terminal_t *t = terminal_get_active();
+    return t ? (uint32_t)terminal_get_cols(t) : TERM_COLS;
+}
+uint32_t get_console_height(void) {
+    terminal_t *t = terminal_get_active();
+    return t ? (uint32_t)terminal_get_rows(t) : TERM_ROWS;
+}
 uint32_t get_screen_width(void) { return 320; }
 uint32_t get_screen_height(void) { return 240; }
 uint8_t get_console_bitness(void) { return 4; }

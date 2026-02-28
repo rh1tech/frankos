@@ -105,6 +105,17 @@ bool taskbar_needs_redraw(void) {
 
 void taskbar_draw(void) {
     if (!taskbar_ready || !taskbar_dirty) return;
+
+    /* Suppress taskbar when focused window covers entire screen (fullscreen) */
+    hwnd_t fs_focus = wm_get_focus();
+    if (fs_focus != HWND_NULL) {
+        window_t *fw = wm_get_window(fs_focus);
+        if (fw && fw->frame.x == 0 && fw->frame.y == 0 &&
+            fw->frame.w == DISPLAY_WIDTH && fw->frame.h == DISPLAY_HEIGHT &&
+            !(fw->flags & WF_BORDER))
+            return;
+    }
+
     taskbar_dirty = false;
 
     int y = TASKBAR_Y;
