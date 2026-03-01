@@ -1,0 +1,36 @@
+#!/bin/bash
+if [ $# -eq 0 ] ; then
+    echo "specify version as n.n.n"
+	exit
+fi
+
+function build() {
+    cmake .. -DUSB_CONSOLE=$1 -DPICO_BOARD=$2 -DPICO_PLATFORM=$3
+    make -j8
+    if [ "$1" = "ON" ]; then
+       CONS=usb 
+    else
+       CONS=uart
+    fi
+    cp pshell.elf ../$2.pshell_$CONS.elf
+    cp pshell.bin ../$2.pshell_$CONS.bin
+    cp pshell.uf2 ../$2.pshell_$CONS.uf2
+    rm -rf *
+}
+
+git checkout master
+rm -rf release
+mkdir release
+cd release
+build ON  pico     rp2040
+build OFF pico     rp2040
+build ON  vgaboard rp2040
+build OFF vgaboard rp2040
+build ON  pico_w   rp2040
+build OFF pico_w   rp2040
+build ON  pico2    rp2350
+build OFF pico2    rp2350
+cd ..
+rm -rf release
+tar czf pshell_$1.tgz *.elf *.bin *.uf2
+rm -f *.elf *.hex *.bin *.uf2

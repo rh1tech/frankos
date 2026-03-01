@@ -23,10 +23,11 @@
 #define SYS_ID_RESTORE    3
 #define SYS_ID_CLOSE      4
 #define SYS_ID_MOVE       5
+#define SYS_ID_FULLSCREEN 6
 
 #define SYS_ITEM_HEIGHT  20
 #define SYS_SEPARATOR_H   8
-#define SYS_MENU_WIDTH   120
+#define SYS_MENU_WIDTH   140
 #define SYS_SHADOW         1
 
 typedef struct {
@@ -36,7 +37,7 @@ typedef struct {
 } sys_item_t;
 
 /* Items change based on window state */
-static sys_item_t sys_items[5];
+static sys_item_t sys_items[6];
 static int sys_item_count;
 
 /*==========================================================================
@@ -62,6 +63,13 @@ static void build_items(void) {
     }
     if ((win->flags & WF_RESIZABLE) && win->state != WS_MAXIMIZED) {
         sys_items[sys_item_count++] = (sys_item_t){ "Maximize", SYS_ID_MAXIMIZE, false };
+    }
+    /* Fullscreen toggle — available for all closable windows */
+    if (win->flags & WF_CLOSABLE) {
+        bool is_fs = wm_is_fullscreen(sys_hwnd);
+        sys_items[sys_item_count++] = (sys_item_t){
+            is_fs ? "Exit Fullscreen" : "Enter Fullscreen",
+            SYS_ID_FULLSCREEN, false };
     }
     /* Minimize available for all closable windows */
     if (win->flags & WF_CLOSABLE) {
@@ -134,6 +142,9 @@ static void execute(uint8_t id) {
         break;
     case SYS_ID_MOVE:
         wm_begin_keyboard_move(hwnd);
+        break;
+    case SYS_ID_FULLSCREEN:
+        wm_toggle_fullscreen(hwnd);
         break;
     case SYS_ID_CLOSE: {
         window_event_t ev;

@@ -313,8 +313,20 @@ void gretrace(void) {
 void digger_paint(hwnd_t hwnd) {
     wd_begin(hwnd);
 
+    bool fs = wm_is_fullscreen(hwnd);
+
     int16_t stride;
-    uint8_t *dst = wd_fb_ptr(0, 0, &stride);
+    uint8_t *dst;
+    if (fs) {
+        /* In fullscreen (640×480), center 640×400 with 40-row black bars */
+        int bar = 40;
+        /* Fill top and bottom bars black */
+        wd_fill_rect(0, 0, 640, bar, COLOR_BLACK);
+        wd_fill_rect(0, bar + DIGGER_HEIGHT * 2, 640, bar, COLOR_BLACK);
+        dst = wd_fb_ptr(0, bar, &stride);
+    } else {
+        dst = wd_fb_ptr(0, 0, &stride);
+    }
     if (!dst || !g_app || !g_app->framebuffer) {
         wd_end();
         return;
@@ -323,29 +335,52 @@ void digger_paint(hwnd_t hwnd) {
     const uint8_t *src = g_app->framebuffer;
     const uint8_t *lut = g_app->cga_to_color;
 
-    /* Clamp rendering to visible client area to prevent scanline overflow
-     * when the window extends past the right/bottom screen edge. */
+    /* Clamp rendering to visible client area to prevent scanline overflow. */
     int16_t clip_w, clip_h;
     wd_get_clip_size(&clip_w, &clip_h);
-    int max_bytes = clip_w / 2;                     /* pixels → packed bytes */
-    if (max_bytes > DIGGER_FB_STRIDE) max_bytes = DIGGER_FB_STRIDE;
-    int max_rows = clip_h;
-    if (max_rows > DIGGER_HEIGHT) max_rows = DIGGER_HEIGHT;
 
-    /*
-     * Both framebuffers use the same nibble order:
-     *   high nibble = left (even) pixel, low nibble = right (odd) pixel.
-     * Translate each nibble from CGA index (0-3) to FRANK OS COLOR_* (0-15).
-     */
-    for (int y = 0; y < max_rows; y++) {
-        const uint8_t *srow = &src[(y + DIGGER_Y_OFFSET) * DIGGER_FB_STRIDE];
-        uint8_t *drow = &dst[y * stride];
+    if (!fs) {
+        /* ---- Normal mode: 1x rendering ---- */
+        int max_bytes = clip_w / 2;
+        if (max_bytes > DIGGER_FB_STRIDE) max_bytes = DIGGER_FB_STRIDE;
+        int max_rows = clip_h;
+        if (max_rows > DIGGER_HEIGHT) max_rows = DIGGER_HEIGHT;
 
-        for (int bx = 0; bx < max_bytes; bx++) {
-            uint8_t sb = srow[bx];
-            uint8_t left  = lut[(sb >> 4) & 0x0F];
-            uint8_t right = lut[sb & 0x0F];
-            drow[bx] = (left << 4) | right;
+        for (int y = 0; y < max_rows; y++) {
+            const uint8_t *srow = &src[(y + DIGGER_Y_OFFSET) * DIGGER_FB_STRIDE];
+            uint8_t *drow = &dst[y * stride];
+            for (int bx = 0; bx < max_bytes; bx++) {
+                uint8_t sb = srow[bx];
+                uint8_t left  = lut[(sb >> 4) & 0x0F];
+                uint8_t right = lut[sb & 0x0F];
+                drow[bx] = (left << 4) | right;
+            }
+        }
+    } else {
+        /* ---- Fullscreen mode: 2x rendering ---- */
+        int max_bytes = clip_w / 4;   /* each src byte → 2 dst bytes at 2x */
+        if (max_bytes > DIGGER_FB_STRIDE) max_bytes = DIGGER_FB_STRIDE;
+        int max_rows = (clip_h - 40) / 2;  /* subtract top bar, halve for 2x */
+        if (max_rows > DIGGER_HEIGHT) max_rows = DIGGER_HEIGHT;
+
+        for (int y = 0; y < max_rows; y++) {
+            const uint8_t *srow = &src[(y + DIGGER_Y_OFFSET) * DIGGER_FB_STRIDE];
+            uint8_t *row0 = &dst[(y * 2) * stride];
+            uint8_t *row1 = row0 + stride;
+
+            for (int bx = 0; bx < max_bytes; bx++) {
+                uint8_t sb = srow[bx];
+                uint8_t left  = lut[(sb >> 4) & 0x0F];
+                uint8_t right = lut[sb & 0x0F];
+                /* Each source pixel (nibble) → 2 destination pixels:
+                 * left nibble: LL, right nibble: RR */
+                uint8_t b0 = (left << 4) | left;
+                uint8_t b1 = (right << 4) | right;
+                row0[bx * 2]     = b0;
+                row0[bx * 2 + 1] = b1;
+                row1[bx * 2]     = b0;
+                row1[bx * 2 + 1] = b1;
+            }
         }
     }
 

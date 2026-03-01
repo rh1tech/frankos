@@ -140,6 +140,8 @@ bool digger_event(hwnd_t hwnd, const window_event_t *event) {
         return false;
 
     if (event->type == WM_CLOSE) {
+        if (wm_is_fullscreen(hwnd))
+            wm_toggle_fullscreen(hwnd);
         g_app->closing = true;
         /* Wake up game task if blocked in getkey() */
         if (g_app->app_task)
@@ -182,6 +184,11 @@ bool digger_event(hwnd_t hwnd, const window_event_t *event) {
 
     if (event->type == WM_KEYDOWN) {
         uint8_t sc = event->key.scancode;
+        /* Alt+Enter: toggle fullscreen */
+        if (sc == 0x28 && (event->key.modifiers & KMOD_ALT)) {
+            wm_toggle_fullscreen(hwnd);
+            return true;
+        }
         g_app->key_state[sc] = 1;
 
         /* Push into key FIFO */
@@ -207,6 +214,13 @@ bool digger_event(hwnd_t hwnd, const window_event_t *event) {
 int main(int argc, char **argv) {
     (void)argc;
     (void)argv;
+
+    /* Singleton: if Digger is already running, focus it and exit */
+    hwnd_t existing = wm_find_window_by_title("Digger");
+    if (existing != HWND_NULL) {
+        wm_set_focus(existing);
+        return 0;
+    }
 
     /* Allocate app state */
     g_app = (digger_app_t *)pvPortMalloc(sizeof(digger_app_t));
@@ -287,3 +301,5 @@ int main(int argc, char **argv) {
 
     return 0;
 }
+
+uint32_t __app_flags(void) { return APPFLAG_SINGLETON; }

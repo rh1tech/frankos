@@ -29,6 +29,10 @@ void cursor_set_type(cursor_type_t type);
 /* Get the active cursor shape */
 cursor_type_t cursor_get_type(void);
 
+/* Show / hide the mouse cursor globally (for fullscreen modes) */
+void cursor_set_visible(bool visible);
+bool cursor_is_visible(void);
+
 /* Draw the current cursor at screen position (x, y). */
 void cursor_draw(int16_t x, int16_t y);
 

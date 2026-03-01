@@ -242,62 +242,121 @@ static void zx_paint(hwnd_t hwnd) {
 
     wd_begin(hwnd);
 
+    bool fs = wm_is_fullscreen(hwnd);
+    int scale = fs ? 2 : 1;
+
     uint8_t border = zx_to_cga[sys->border_color & 7];
 
     /* Draw border — four rectangles around the 256×192 bitmap area */
-    wd_fill_rect(0, 0, CLIENT_W, BORDER_V, border);                       /* top */
-    wd_fill_rect(0, BORDER_V + 192, CLIENT_W, BORDER_V, border);          /* bottom */
-    wd_fill_rect(0, BORDER_V, BORDER_H, 192, border);                     /* left */
-    wd_fill_rect(BORDER_H + 256, BORDER_V, BORDER_H, 192, border);        /* right */
+    int bh = BORDER_H * scale;
+    int bv = BORDER_V * scale;
+    int bm_w = 256 * scale;
+    int bm_h = 192 * scale;
+    int cw = CLIENT_W * scale;
+
+    wd_fill_rect(0, 0, cw, bv, border);                   /* top */
+    wd_fill_rect(0, bv + bm_h, cw, bv, border);           /* bottom */
+    wd_fill_rect(0, bv, bh, bm_h, border);                /* left */
+    wd_fill_rect(bh + bm_w, bv, bh, bm_h, border);       /* right */
 
     /* Direct framebuffer access — bypass wd_hline overhead entirely.
      * Each ZX bitmap byte (8 mono pixels) expands to 4 framebuffer bytes
      * via a 4-entry LUT indexed by bit pairs. */
     int16_t stride;
-    uint8_t *fb_base = wd_fb_ptr(BORDER_H, BORDER_V, &stride);
-    if (!fb_base) return;
+    uint8_t *fb_base = wd_fb_ptr(bh, bv, &stride);
+    if (!fb_base) { wd_end(); return; }
     uint8_t *vmem = sys->ram[0];
     bool flash_swap = (sys->blink_counter & 0x10) != 0;
 
-    /* Clamp bitmap rendering to visible client area.
-     * Each ZX column produces 4 framebuffer bytes (8 pixels).
-     * Available width from fb_base is (clip_w - BORDER_H) pixels. */
+    /* Clamp bitmap rendering to visible client area. */
     int16_t clip_w, clip_h;
     wd_get_clip_size(&clip_w, &clip_h);
-    int avail_px = clip_w - BORDER_H;
+    int avail_px = clip_w - bh;
     if (avail_px < 0) avail_px = 0;
-    int max_cols = avail_px / 8;       /* 8 pixels per ZX column */
-    if (max_cols > 32) max_cols = 32;
-    int max_rows = clip_h - BORDER_V;
-    if (max_rows < 0) max_rows = 0;
-    if (max_rows > 192) max_rows = 192;
 
-    for (int y = 0; y < max_rows; y++) {
-        int addr = ((y & 0xC0) << 5) | ((y & 0x07) << 8) | ((y & 0x38) << 2);
-        int attr_row = 0x1800 + ((y >> 3) << 5);
-        uint8_t *dst = fb_base + y * stride;
+    if (!fs) {
+        /* ---- Normal mode: 1x rendering ---- */
+        int max_cols = avail_px / 8;
+        if (max_cols > 32) max_cols = 32;
+        int max_rows = clip_h - bv;
+        if (max_rows < 0) max_rows = 0;
+        if (max_rows > 192) max_rows = 192;
 
-        for (int col = 0; col < max_cols; col++) {
-            uint8_t byte = vmem[addr + col];
-            uint8_t attr = vmem[attr_row + col];
+        for (int y = 0; y < max_rows; y++) {
+            int addr = ((y & 0xC0) << 5) | ((y & 0x07) << 8) | ((y & 0x38) << 2);
+            int attr_row = 0x1800 + ((y >> 3) << 5);
+            uint8_t *dst = fb_base + y * stride;
 
-            uint8_t ink   = attr & 0x07;
-            uint8_t paper = (attr >> 3) & 0x07;
-            uint8_t bright = (attr & 0x40) ? 8 : 0;
-            if ((attr & 0x80) && flash_swap) {
-                uint8_t tmp = ink; ink = paper; paper = tmp;
+            for (int col = 0; col < max_cols; col++) {
+                uint8_t byte = vmem[addr + col];
+                uint8_t attr = vmem[attr_row + col];
+
+                uint8_t ink   = attr & 0x07;
+                uint8_t paper = (attr >> 3) & 0x07;
+                uint8_t bright = (attr & 0x40) ? 8 : 0;
+                if ((attr & 0x80) && flash_swap) {
+                    uint8_t tmp = ink; ink = paper; paper = tmp;
+                }
+                uint8_t fg = zx_to_cga[ink + bright];
+                uint8_t bg = zx_to_cga[paper + bright];
+
+                uint8_t lut[4] = {
+                    (bg << 4) | bg, (bg << 4) | fg,
+                    (fg << 4) | bg, (fg << 4) | fg
+                };
+                *dst++ = lut[(byte >> 6) & 3];
+                *dst++ = lut[(byte >> 4) & 3];
+                *dst++ = lut[(byte >> 2) & 3];
+                *dst++ = lut[(byte >> 0) & 3];
             }
-            uint8_t fg = zx_to_cga[ink + bright];
-            uint8_t bg = zx_to_cga[paper + bright];
+        }
+    } else {
+        /* ---- Fullscreen mode: 2x rendering ---- */
+        int max_cols = avail_px / 16;   /* 16 pixels per ZX column at 2x */
+        if (max_cols > 32) max_cols = 32;
+        int max_rows = (clip_h - bv) / 2;
+        if (max_rows < 0) max_rows = 0;
+        if (max_rows > 192) max_rows = 192;
 
-            uint8_t lut[4] = {
-                (bg << 4) | bg, (bg << 4) | fg,
-                (fg << 4) | bg, (fg << 4) | fg
-            };
-            *dst++ = lut[(byte >> 6) & 3];
-            *dst++ = lut[(byte >> 4) & 3];
-            *dst++ = lut[(byte >> 2) & 3];
-            *dst++ = lut[(byte >> 0) & 3];
+        for (int y = 0; y < max_rows; y++) {
+            int addr = ((y & 0xC0) << 5) | ((y & 0x07) << 8) | ((y & 0x38) << 2);
+            int attr_row = 0x1800 + ((y >> 3) << 5);
+            uint8_t *row0 = fb_base + (y * 2) * stride;
+            uint8_t *row1 = row0 + stride;
+
+            uint8_t *d0 = row0;
+            uint8_t *d1 = row1;
+
+            for (int col = 0; col < max_cols; col++) {
+                uint8_t byte = vmem[addr + col];
+                uint8_t attr = vmem[attr_row + col];
+
+                uint8_t ink   = attr & 0x07;
+                uint8_t paper = (attr >> 3) & 0x07;
+                uint8_t bright = (attr & 0x40) ? 8 : 0;
+                if ((attr & 0x80) && flash_swap) {
+                    uint8_t tmp = ink; ink = paper; paper = tmp;
+                }
+                uint8_t fg = zx_to_cga[ink + bright];
+                uint8_t bg = zx_to_cga[paper + bright];
+
+                /* LUT for 2x: each original 2-pixel byte becomes 2 bytes
+                 * (4 pixels).  Pixel pair AB → AA BB. */
+                uint8_t lut[4] = {
+                    (bg << 4) | bg, (bg << 4) | fg,
+                    (fg << 4) | bg, (fg << 4) | fg
+                };
+
+                for (int bp = 6; bp >= 0; bp -= 2) {
+                    uint8_t val = lut[(byte >> bp) & 3];
+                    uint8_t hi = (val >> 4) & 0x0F;
+                    uint8_t lo = val & 0x0F;
+                    uint8_t b0 = (hi << 4) | hi;   /* left pixel doubled */
+                    uint8_t b1 = (lo << 4) | lo;   /* right pixel doubled */
+                    *d0++ = b0; *d0++ = b1;
+                    *d1++ = b0; *d1++ = b1;
+                }
+            }
         }
     }
     wd_end();
@@ -374,6 +433,13 @@ static bool zx_event(hwnd_t hwnd, const window_event_t *ev) {
     }
 
     if (ev->type == WM_KEYDOWN || ev->type == WM_KEYUP) {
+        /* Alt+Enter: toggle fullscreen */
+        if (ev->type == WM_KEYDOWN &&
+            ev->key.scancode == 0x28 &&
+            (ev->key.modifiers & KMOD_ALT)) {
+            wm_toggle_fullscreen(hwnd);
+            return true;
+        }
         int zx_key = hid_to_zx(ev->key.scancode);
         if (zx_key >= 0) {
             if (ev->type == WM_KEYDOWN) zx_key_down(sys, zx_key);
@@ -384,6 +450,8 @@ static bool zx_event(hwnd_t hwnd, const window_event_t *ev) {
     }
 
     if (ev->type == WM_CLOSE) {
+        if (wm_is_fullscreen(hwnd))
+            wm_toggle_fullscreen(hwnd);
         g->closing = true;
         xTaskNotifyGive(g->app_task);
         return true;
@@ -398,6 +466,13 @@ static bool zx_event(hwnd_t hwnd, const window_event_t *ev) {
  * ====================================================================== */
 
 int main(int argc, char **argv) {
+
+    /* Singleton: if ZX Spectrum is already running, focus it and exit */
+    hwnd_t existing = wm_find_window_by_title("ZX Spectrum");
+    if (existing != HWND_NULL) {
+        wm_set_focus(existing);
+        return 0;
+    }
 
     /* Allocate the globals struct on the SRAM heap and install in r9.
      * From this point on, all code in this task can access G-> fields. */
@@ -751,3 +826,5 @@ static void handle_tape_trap(void *ud) {
     if (f_eof(G->tap_file))
         f_lseek(G->tap_file, 0);
 }
+
+uint32_t __app_flags(void) { return APPFLAG_SINGLETON; }

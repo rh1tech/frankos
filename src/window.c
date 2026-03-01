@@ -35,6 +35,13 @@ static hwnd_t    z_stack[WM_MAX_WINDOWS];      /* z-order: bottom to top */
 static uint8_t   z_count;                       /* number of entries in z_stack */
 static hwnd_t    focus_hwnd;                    /* currently focused window */
 
+/* Per-window fullscreen state (separate from window_t to avoid struct bloat) */
+static struct {
+    rect_t   saved_rect;
+    uint16_t saved_flags;
+    bool     active;
+} fs_state[WM_MAX_WINDOWS];
+
 /* Full-repaint flag: when true, the compositor clears the entire framebuffer
  * before painting.  Set by structural changes (window create/destroy/move/etc).
  * Content-only invalidations (app redraws) leave it false so the screen is
@@ -219,6 +226,11 @@ hwnd_t wm_create_window(int16_t x, int16_t y, int16_t w, int16_t h,
             }
 
             /* New window is WF_DIRTY — it will paint itself */
+            /* App just created its window — reset hourglass to arrow.
+             * This covers all launch paths (start menu, desktop,
+             * file manager, file associations) without needing
+             * cursor management in each caller. */
+            cursor_set_type(CURSOR_ARROW);
             taskbar_invalidate();
             return hwnd;
         }
@@ -260,6 +272,7 @@ void wm_destroy_window(hwnd_t hwnd) {
     }
 
     memset(win, 0, sizeof(*win));
+    fs_state[hwnd - 1].active = false;
     taskbar_invalidate();
 }
 
@@ -508,6 +521,53 @@ void wm_invalidate(hwnd_t hwnd) {
 void wm_force_full_repaint(void) {
     needs_full_repaint = true;
     wm_mark_dirty();
+}
+
+/*==========================================================================
+ * Fullscreen support
+ *=========================================================================*/
+
+void wm_toggle_fullscreen(hwnd_t hwnd) {
+    if (!valid_hwnd(hwnd)) return;
+    window_t *win = &windows[hwnd - 1];
+    struct { rect_t saved_rect; uint16_t saved_flags; bool active; }
+        *fs = &fs_state[hwnd - 1];
+
+    if (!fs->active) {
+        /* Enter fullscreen: save state, remove decorations, expand */
+        fs->saved_rect  = win->frame;
+        fs->saved_flags = win->flags;
+        win->flags &= ~(WF_BORDER | WF_MENUBAR);
+        wm_set_window_rect(hwnd, 0, 0, DISPLAY_WIDTH, DISPLAY_HEIGHT);
+        fs->active = true;
+        cursor_set_visible(false);
+        cursor_overlay_erase();
+        wm_force_full_repaint();
+    } else {
+        /* Exit fullscreen: restore decorations and rect */
+        win->flags |= (fs->saved_flags & (WF_BORDER | WF_MENUBAR));
+        wm_set_window_rect(hwnd, fs->saved_rect.x, fs->saved_rect.y,
+                           fs->saved_rect.w, fs->saved_rect.h);
+        fs->active = false;
+        cursor_set_visible(true);
+        wm_force_full_repaint();
+    }
+}
+
+bool wm_is_fullscreen(hwnd_t hwnd) {
+    if (!valid_hwnd(hwnd)) return false;
+    return fs_state[hwnd - 1].active;
+}
+
+hwnd_t wm_find_window_by_title(const char *title) {
+    if (!title) return HWND_NULL;
+    for (uint8_t i = 0; i < WM_MAX_WINDOWS; i++) {
+        if (!(windows[i].flags & WF_ALIVE)) continue;
+        if (!(windows[i].flags & WF_VISIBLE)) continue;
+        if (strcmp(windows[i].title, title) == 0)
+            return (hwnd_t)(i + 1);
+    }
+    return HWND_NULL;
 }
 
 void wm_set_title(hwnd_t hwnd, const char *title) {
@@ -1050,9 +1110,9 @@ void wm_composite(void) {
     }
 
     /* Stamp cursor — skip if already stamped above, untouched,
-     * or hidden during boot (before first mouse move). */
+     * hidden during boot, or hidden for fullscreen. */
     extern volatile bool boot_cursor_hidden;
-    if (cursor_mode != CUR_SKIP && !boot_cursor_hidden) {
+    if (cursor_mode != CUR_SKIP && !boot_cursor_hidden && cursor_is_visible()) {
         int16_t mx, my;
         wm_get_cursor_pos(&mx, &my);
         cursor_overlay_stamp(mx, my);

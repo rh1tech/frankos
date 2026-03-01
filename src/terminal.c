@@ -220,11 +220,8 @@ static void __not_in_flash_func(terminal_paint)(hwnd_t hwnd) {
 /* Force-close: signal shell, destroy window immediately */
 static void terminal_force_close(terminal_t *t, hwnd_t hwnd) {
     /* If fullscreen, restore border/menubar so desktop repaints properly */
-    if (t->fullscreen) {
-        window_t *w = wm_get_window(hwnd);
-        if (w) w->flags |= (t->pre_fs_flags & (WF_BORDER | WF_MENUBAR));
-        t->fullscreen = false;
-        wm_force_full_repaint();
+    if (wm_is_fullscreen(hwnd)) {
+        wm_toggle_fullscreen(hwnd);
     }
 
     t->closing = true;
@@ -258,7 +255,7 @@ static bool terminal_event(hwnd_t hwnd, const window_event_t *event) {
     case WM_KEYDOWN:
         /* Alt+Enter: toggle fullscreen (before Enter→'\n' mapping) */
         if (event->key.scancode == 0x28 && (event->key.modifiers & KMOD_ALT)) {
-            terminal_toggle_fullscreen(t);
+            wm_toggle_fullscreen(hwnd);
             return true;
         }
         switch (event->key.scancode) {
@@ -667,34 +664,6 @@ void terminal_resize(terminal_t *t, int client_w, int client_h) {
         }
     }
 #undef SIGWINCH
-}
-
-/*==========================================================================
- * Fullscreen toggle (Alt+Enter)
- *=========================================================================*/
-
-void terminal_toggle_fullscreen(terminal_t *t) {
-    if (!t || t->hwnd == HWND_NULL) return;
-
-    window_t *win = wm_get_window(t->hwnd);
-    if (!win) return;
-
-    if (!t->fullscreen) {
-        /* Enter fullscreen: save state, remove decorations, expand */
-        t->pre_fs_rect = win->frame;
-        t->pre_fs_flags = win->flags;
-        win->flags &= ~(WF_BORDER | WF_MENUBAR);
-        wm_set_window_rect(t->hwnd, 0, 0, DISPLAY_WIDTH, DISPLAY_HEIGHT);
-        t->fullscreen = true;
-        wm_force_full_repaint();
-    } else {
-        /* Exit fullscreen: restore decorations and rect */
-        win->flags |= (t->pre_fs_flags & (WF_BORDER | WF_MENUBAR));
-        wm_set_window_rect(t->hwnd, t->pre_fs_rect.x, t->pre_fs_rect.y,
-                           t->pre_fs_rect.w, t->pre_fs_rect.h);
-        t->fullscreen = false;
-        wm_force_full_repaint();
-    }
 }
 
 /*==========================================================================

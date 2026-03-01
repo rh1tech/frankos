@@ -61,11 +61,6 @@ struct terminal {
     uint8_t  fg_color, bg_color;
     bool     cursor_visible;
 
-    /* Fullscreen state */
-    bool     fullscreen;
-    rect_t   pre_fs_rect;
-    uint16_t pre_fs_flags;
-
     /* Keyboard input ring buffer (for terminal_getch) */
     uint8_t  input_buf[64];
     uint8_t  in_head, in_tail;
@@ -138,9 +133,6 @@ size_t   terminal_get_textbuf_size(terminal_t *t);
 
 /* Resize terminal grid to fit new client dimensions */
 void terminal_resize(terminal_t *t, int client_w, int client_h);
-
-/* Toggle fullscreen mode (Alt+Enter) */
-void terminal_toggle_fullscreen(terminal_t *t);
 
 /* Query current grid dimensions */
 int terminal_get_cols(terminal_t *t);

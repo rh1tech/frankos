@@ -63,6 +63,7 @@ typedef struct { int16_t x, y; } point_t;
  * ======================================================================== */
 
 #define APPFLAG_BACKGROUND  (1u << 0)   /* app keeps running when not focused */
+#define APPFLAG_SINGLETON   (1u << 1)   /* only one instance allowed */
 
 /* ========================================================================
  * Window handle
@@ -868,6 +869,26 @@ static inline const fa_app_t *file_assoc_get_apps(int *count) {
 static inline bool desktop_add_shortcut(const char *path) {
     typedef bool (*fn_t)(const char *);
     return ((fn_t)_sys_table_ptrs[500])(path);
+}
+
+/* 502: wm_toggle_fullscreen — toggle fullscreen mode for a window.
+ * Strips borders/menubar and expands to full screen; calling again restores. */
+static inline void wm_toggle_fullscreen(hwnd_t hwnd) {
+    typedef void (*fn_t)(hwnd_t);
+    ((fn_t)_sys_table_ptrs[502])(hwnd);
+}
+
+/* 503: wm_is_fullscreen — returns true if window is in fullscreen mode */
+static inline bool wm_is_fullscreen(hwnd_t hwnd) {
+    typedef bool (*fn_t)(hwnd_t);
+    return ((fn_t)_sys_table_ptrs[503])(hwnd);
+}
+
+/* 504: wm_find_window_by_title — find alive+visible window by title.
+ * Returns HWND_NULL if none found. Used for singleton enforcement. */
+static inline hwnd_t wm_find_window_by_title(const char *title) {
+    typedef hwnd_t (*fn_t)(const char *);
+    return ((fn_t)_sys_table_ptrs[504])(title);
 }
 
 #ifdef __cplusplus

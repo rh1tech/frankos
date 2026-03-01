@@ -670,6 +670,10 @@ unsigned long __in_systable() __aligned(4096) sys_table_ptrs[] = {
     file_assoc_get_apps,    // 499
     desktop_add_shortcut,   // 500
     wd_get_clip_size,       // 501
+    // API v.32 — Fullscreen + singleton
+    wm_toggle_fullscreen,   // 502
+    wm_is_fullscreen,       // 503
+    wm_find_window_by_title,// 504
     // TODO:
     0
 };

@@ -233,12 +233,40 @@ static uint8_t    *g_last_dst = NULL;  /* detect window moves */
 static void basic_paint(hwnd_t hwnd)
 {
     wd_begin(hwnd);
+
+    bool fs = wm_is_fullscreen(hwnd);
+
+    /* In fullscreen (640×480), the 79×24 text grid (632×384) doesn't
+     * fill the screen.  Centre it and fill the margins with black. */
+    int16_t x_off = 0, y_off = 0;
+    if (fs) {
+        x_off = (DISPLAY_WIDTH  - BASIC_CLIENT_W) / 2;  /* 4 */
+        y_off = (DISPLAY_HEIGHT - BASIC_CLIENT_H) / 2;  /* 48 */
+    }
+
     int16_t stride;
-    uint8_t *dst = wd_fb_ptr(0, 0, &stride);
+    uint8_t *dst = wd_fb_ptr(x_off, y_off, &stride);
     if (!dst) {
         wd_end();
         return;
     }
+
+    /* Fill black margins in fullscreen on first paint / mode switch */
+    static bool prev_fs = false;
+    if (fs && !prev_fs) {
+        /* Top bar */
+        wd_fill_rect(0, 0, DISPLAY_WIDTH, y_off, COLOR_BLACK);
+        /* Bottom bar */
+        wd_fill_rect(0, y_off + BASIC_CLIENT_H, DISPLAY_WIDTH,
+                     DISPLAY_HEIGHT - y_off - BASIC_CLIENT_H, COLOR_BLACK);
+        /* Left strip */
+        wd_fill_rect(0, y_off, x_off, BASIC_CLIENT_H, COLOR_BLACK);
+        /* Right strip */
+        wd_fill_rect(x_off + BASIC_CLIENT_W, y_off,
+                     DISPLAY_WIDTH - x_off - BASIC_CLIENT_W,
+                     BASIC_CLIENT_H, COLOR_BLACK);
+    }
+    prev_fs = fs;
 
     /* ── Compute visible columns / rows ─────────────────────────────
      * When the window extends past the screen edge, writing the full
@@ -249,23 +277,23 @@ static void basic_paint(hwnd_t hwnd)
      * ─────────────────────────────────────────────────────────────── */
     int vis_cols = BASIC_COLS;
     int vis_rows = BASIC_ROWS;
-    {
+    if (!fs) {
         int16_t dummy;
         /* Horizontal clipping */
-        if (!wd_fb_ptr(BASIC_CLIENT_W - 1, 0, &dummy)) {
+        if (!wd_fb_ptr(x_off + BASIC_CLIENT_W - 1, y_off, &dummy)) {
             vis_cols = 0;
             for (int c = 0; c < BASIC_COLS; c++) {
-                if (wd_fb_ptr((c + 1) * BASIC_FW - 1, 0, &dummy))
+                if (wd_fb_ptr(x_off + (c + 1) * BASIC_FW - 1, y_off, &dummy))
                     vis_cols = c + 1;
                 else
                     break;
             }
         }
         /* Vertical clipping */
-        if (!wd_fb_ptr(0, BASIC_CLIENT_H - 1, &dummy)) {
+        if (!wd_fb_ptr(x_off, y_off + BASIC_CLIENT_H - 1, &dummy)) {
             vis_rows = 0;
             for (int r = 0; r < BASIC_ROWS; r++) {
-                if (wd_fb_ptr(0, (r + 1) * BASIC_FH - 1, &dummy))
+                if (wd_fb_ptr(x_off, y_off + (r + 1) * BASIC_FH - 1, &dummy))
                     vis_rows = r + 1;
                 else
                     break;
@@ -279,7 +307,7 @@ static void basic_paint(hwnd_t hwnd)
     }
 
     /* Force full repaint when the framebuffer origin changes (window
-     * was moved) — the decorator fills the client with bg_color. */
+     * was moved or fullscreen toggled) — background is re-filled. */
     bool force = (dst != g_last_dst);
     g_last_dst = dst;
 
@@ -341,6 +369,8 @@ static bool basic_event(hwnd_t hwnd, const window_event_t *event)
     (void)hwnd;
 
     if (event->type == WM_CLOSE) {
+        if (wm_is_fullscreen(hwnd))
+            wm_toggle_fullscreen(hwnd);
         g_closing = true;
         MMAbort   = 1;
         if (g_task)
@@ -368,6 +398,12 @@ static bool basic_event(hwnd_t hwnd, const window_event_t *event)
         if ((mod & KMOD_CTRL) && sc == 0x06) {
             MMAbort = 1;
             basic_kbuf_push(3);
+            return true;
+        }
+
+        /* Alt+Enter → toggle fullscreen */
+        if (sc == 0x28 && (mod & KMOD_ALT)) {
+            wm_toggle_fullscreen(hwnd);
             return true;
         }
 
@@ -432,6 +468,13 @@ static void blink_cb(TimerHandle_t t)
 
 int main(int argc, char **argv)
 {
+    /* ── Singleton: if already running, focus existing window ──── */
+    hwnd_t existing = wm_find_window_by_title("MMBasic");
+    if (existing != HWND_NULL) {
+        wm_set_focus(existing);
+        return 0;
+    }
+
     printf("[basic] main() start\n");
     g_task = xTaskGetCurrentTaskHandle();
     printf("[basic] task handle: %p\n", (void*)g_task);
@@ -499,3 +542,5 @@ int main(int argc, char **argv)
 
     return 0;
 }
+
+uint32_t __app_flags(void) { return APPFLAG_SINGLETON; }

@@ -167,10 +167,19 @@ static const cursor_def_t cursors[CURSOR_COUNT] = {
 };
 
 static cursor_type_t current_cursor = CURSOR_ARROW;
+static bool cursor_visible = true;
 
 void cursor_set_type(cursor_type_t type) {
     if (type < CURSOR_COUNT)
         current_cursor = type;
+}
+
+void cursor_set_visible(bool visible) {
+    cursor_visible = visible;
+}
+
+bool cursor_is_visible(void) {
+    return cursor_visible;
 }
 
 cursor_type_t cursor_get_type(void) {

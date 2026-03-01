@@ -187,6 +187,17 @@ hwnd_t wm_window_at_point(int16_t x, int16_t y);
 /* Force a full clear on the next composite (layout changed) */
 void wm_force_full_repaint(void);
 
+/* Fullscreen toggle — strips borders and expands to full screen.
+ * Calling again restores the previous frame rect and flags. */
+void wm_toggle_fullscreen(hwnd_t hwnd);
+
+/* Returns true if the window is currently fullscreen */
+bool wm_is_fullscreen(hwnd_t hwnd);
+
+/* Find the first alive+visible window whose title matches.
+ * Returns HWND_NULL if none found. */
+hwnd_t wm_find_window_by_title(const char *title);
+
 /* Compositor: repaint all visible windows back-to-front */
 void wm_composite(void);
 
