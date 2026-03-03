@@ -22,9 +22,9 @@
 
 /* ── Layout constants ─────────────────────────────────────────── */
 
-#define AT_ICON_SIZE      16       /* 16x16 pixel icons */
+#define AT_ICON_SIZE      32       /* 32x32 pixel icons */
 #define AT_CELL_W         48       /* width of each icon cell */
-#define AT_CELL_H         40       /* height of each icon cell (icon + gap) */
+#define AT_CELL_H         48       /* height of each icon cell (icon + gap) */
 #define AT_PAD_X          8        /* horizontal padding inside the box */
 #define AT_PAD_TOP        8        /* padding above icons */
 #define AT_PAD_BOTTOM     4        /* padding below title text */
@@ -41,7 +41,7 @@ static hwnd_t   at_original_focus;     /* focus before overlay opened */
 
 typedef struct {
     hwnd_t        hwnd;
-    const uint8_t *icon;               /* pointer to icon data (256 bytes) */
+    const uint8_t *icon;               /* pointer to 32x32 icon data */
     char          title[24];
 } at_entry_t;
 
@@ -53,6 +53,29 @@ static int16_t at_x, at_y, at_w, at_h;
 /* ── Helpers ──────────────────────────────────────────────────── */
 
 extern const uint8_t default_icon_16x16[256];
+
+/* Default 32x32 icon (upscaled from default_icon_16x16 on first use) */
+static uint8_t at_default_icon32[1024];
+static bool at_default_ready = false;
+
+/* Nearest-neighbour upscale a 16x16 icon to 32x32 */
+static void nn_upscale_16_to_32(const uint8_t *src, uint8_t *dst) {
+    for (int y = 0; y < 32; y++) {
+        int sy = y * 16 / 32;
+        for (int x = 0; x < 32; x++) {
+            int sx = x * 16 / 32;
+            dst[y * 32 + x] = src[sy * 16 + sx];
+        }
+    }
+}
+
+static const uint8_t *get_default_icon32(void) {
+    if (!at_default_ready) {
+        nn_upscale_16_to_32(default_icon_16x16, at_default_icon32);
+        at_default_ready = true;
+    }
+    return at_default_icon32;
+}
 
 /* Build the entry list from current windows.
  * Includes all ALIVE | BORDER windows regardless of minimised/suspended state.
@@ -88,7 +111,7 @@ static void build_list(void) {
         window_t *w = wm_get_window(sorted[i]);
         at_entry_t *e = &at_entries[at_count];
         e->hwnd = sorted[i];
-        e->icon = w->icon ? w->icon : default_icon_16x16;
+        e->icon = w->icon32 ? w->icon32 : get_default_icon32();
         strncpy(e->title, w->title, sizeof(e->title) - 1);
         e->title[sizeof(e->title) - 1] = '\0';
         at_count++;
@@ -98,7 +121,7 @@ static void build_list(void) {
     if (desktop_has_shortcuts() && at_count < AT_MAX_ENTRIES) {
         at_entry_t *e = &at_entries[at_count];
         e->hwnd = HWND_NULL;  /* sentinel: means "desktop" */
-        e->icon = desktop_get_icon();
+        e->icon = desktop_get_icon32();
         strncpy(e->title, "Desktop", sizeof(e->title) - 1);
         e->title[sizeof(e->title) - 1] = '\0';
         at_count++;
@@ -237,8 +260,8 @@ void alttab_draw(void) {
             gfx_fill_rect(sx + 1, sy + 1, sw - 2, sh - 2, COLOR_BLUE);
         }
 
-        /* Draw icon */
-        gfx_draw_icon_16(icon_x, icon_y, e->icon);
+        /* Draw 32x32 icon */
+        gfx_draw_icon_32(icon_x, icon_y, e->icon);
     }
 
     /* ── Title of selected entry (centered below icons, clipped) ── */

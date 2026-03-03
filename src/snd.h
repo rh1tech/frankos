@@ -31,3 +31,9 @@ void snd_close(int ch);
 
 /* Shut down the entire sound system (stops I2S DMA + PIO). */
 void snd_deinit(void);
+
+/* Volume control — right-shift value (0 = max, 4 = muted).
+ * snd_get_volume() returns the current value.
+ * snd_set_volume() clamps to 0-4. */
+uint8_t snd_get_volume(void);
+void    snd_set_volume(uint8_t vol);

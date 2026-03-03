@@ -7,6 +7,7 @@
  */
 
 #include "file_assoc.h"
+#include "ico.h"
 #include "window_event.h"
 #include "app.h"
 #include "ff.h"
@@ -93,6 +94,39 @@ static void parse_ext_line(FIL *f, fa_app_t *app) {
 }
 
 /*==========================================================================
+ * Load icons from .ico file (preferred over raw .inf icon data)
+ *=========================================================================*/
+
+static bool load_ico_icons(const char *base_path, fa_app_t *app) {
+    char ico_path[FA_PATH_LEN + 4];
+    snprintf(ico_path, sizeof(ico_path), "%s.ico", base_path);
+
+    FIL f;
+    if (f_open(&f, ico_path, FA_READ) != FR_OK) return false;
+
+    FSIZE_t fsize = f_size(&f);
+    if (fsize < 22 || fsize > 2048) {   /* sanity: min ICO = ~22 bytes */
+        f_close(&f);
+        return false;
+    }
+
+    uint8_t buf[2048];
+    UINT br;
+    if (f_read(&f, buf, (UINT)fsize, &br) != FR_OK || br != (UINT)fsize) {
+        f_close(&f);
+        return false;
+    }
+    f_close(&f);
+
+    if (ico_parse_16(buf, br, app->icon))
+        app->has_icon = true;
+    if (ico_parse_32(buf, br, app->icon32))
+        app->has_icon32 = true;
+
+    return app->has_icon || app->has_icon32;
+}
+
+/*==========================================================================
  * Scan /fos/*.inf
  *=========================================================================*/
 
@@ -152,32 +186,35 @@ void file_assoc_scan(void) {
             continue;
         }
 
-        /* Seek back to just past the first newline */
+        /* Extension list (right after display name — .inf is text-only) */
         f_lseek(&f, 0);
         {
             char ch;
             UINT br;
-            while (f_read(&f, &ch, 1, &br) == FR_OK && br == 1) {
+            while (f_read(&f, &ch, 1, &br) == FR_OK && br == 1)
                 if (ch == '\n') break;
-            }
         }
-
-        /* Read 256-byte icon */
-        {
-            UINT br;
-            if (f_read(&f, app->icon, FA_ICON_SIZE, &br) == FR_OK
-                && br == FA_ICON_SIZE) {
-                app->has_icon = true;
-            }
-        }
-
-        /* Line 3 (optional): extension list after icon data.
-         * parse_ext_line skips leading whitespace/newlines. */
-        if (app->has_icon) {
-            parse_ext_line(&f, app);
-        }
-
+        parse_ext_line(&f, app);
         f_close(&f);
+
+        /* Load icons from .ico file; fall back to terminal icon */
+        if (!load_ico_icons(base_path, app)) {
+            extern const uint8_t *fn_icon16_terminal_get(void);
+            extern const uint8_t *fn_icon32_terminal_get(void);
+            memcpy(app->icon,   fn_icon16_terminal_get(), FA_ICON_SIZE);
+            memcpy(app->icon32, fn_icon32_terminal_get(), FA_ICON32_SIZE);
+            app->has_icon   = true;
+            app->has_icon32 = true;
+        }
+
+        /* Ensure 32x32 is always available: upscale from 16x16 if needed */
+        if (app->has_icon && !app->has_icon32) {
+            for (int r = 31; r >= 0; r--)
+                for (int c = 31; c >= 0; c--)
+                    app->icon32[r * 32 + c] = app->icon[(r/2) * 16 + (c/2)];
+            app->has_icon32 = true;
+        }
+
         fa_app_count++;
     }
     f_closedir(&dir);
@@ -239,8 +276,17 @@ bool file_assoc_open(const char *file_path) {
 bool file_assoc_open_with(const char *file_path, const char *app_path) {
     if (!file_path || !app_path) return false;
 
-    /* TODO: detect if app is already running and post WM_DROPFILES
-     * to its window instead of launching a second instance. */
+    /* Set the app's icon for the new window */
+    for (int i = 0; i < fa_app_count; i++) {
+        if (strcmp(fa_apps[i].path, app_path) == 0) {
+            if (fa_apps[i].has_icon)
+                wm_set_pending_icon(fa_apps[i].icon);
+            if (fa_apps[i].has_icon32)
+                wm_set_pending_icon32(fa_apps[i].icon32);
+            break;
+        }
+    }
+
     launch_elf_app_with_file(app_path, file_path);
     return true;
 }

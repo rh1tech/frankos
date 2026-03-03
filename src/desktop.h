@@ -23,7 +23,9 @@
 #define DESKTOP_MAX_SHORTCUTS  24
 #define DESKTOP_PATH_MAX       128
 #define DESKTOP_NAME_MAX       20
-#define DESKTOP_ICON_SIZE      256  /* 16x16 palette-index */
+#define DESKTOP_ICON16_SIZE    256   /* 16x16 palette-index (in .inf) */
+#define DESKTOP_ICON32_SIZE    1024  /* 32x32 palette-index (in .inf) */
+#define DESKTOP_ICON_SIZE      DESKTOP_ICON32_SIZE  /* shortcut slot size */
 
 #define DESKTOP_DAT_PATH       "/fos/desktop.dat"
 
@@ -79,6 +81,11 @@ bool desktop_has_shortcuts(void);
 /* Get the 16x16 icon of the first shortcut (for Alt+Tab display).
  * Returns default_icon_16x16 if no shortcuts or no icon. */
 const uint8_t *desktop_get_icon(void);
+
+/* Get a 32x32 desktop icon (loaded from /fos/desktop.ico if available,
+ * otherwise upscaled from desktop_icon_16x16).
+ * The returned pointer is to a static buffer — valid until next call. */
+const uint8_t *desktop_get_icon32(void);
 
 /* Give keyboard focus to the desktop (selects first shortcut).
  * Called when "Desktop" is chosen from Alt+Tab. */

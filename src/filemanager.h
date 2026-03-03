@@ -216,5 +216,9 @@ extern const uint8_t fn_icon16_cut[];
 extern const uint8_t fn_icon16_copy[];
 extern const uint8_t fn_icon16_paste[];
 extern const uint8_t fn_icon16_delete[];
+extern const uint8_t fn_icon32_cc_app[];
+extern const uint8_t fn_icon16_cc_app[];
+extern const uint8_t fn_icon32_default_app[];
+extern const uint8_t fn_icon16_default_app[];
 
 #endif /* FILEMANAGER_H */

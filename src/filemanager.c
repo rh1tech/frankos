@@ -23,6 +23,7 @@
 #include "sdcard_init.h"
 #include "file_assoc.h"
 #include "desktop.h"
+#include "ico.h"
 #include "FreeRTOS.h"
 #include "task.h"
 #include <string.h>
@@ -97,26 +98,27 @@ static uint8_t  fn_app_icon_count;
 
 static const uint8_t *fn_get_icon_32(const fn_entry_t *e) {
     if (e->attrib & AM_DIR) return fn_icon32_folder;
-    if (e->is_executable) return fn_icon32_application;
-    const char *dot = strrchr(e->name, '.');
-    if (dot) {
-        if (strcmp(dot, ".txt") == 0 || strcmp(dot, ".inf") == 0)
-            return fn_icon32_text_doc;
+    if (e->is_executable == 2) return fn_icon32_cc_app;
+    if (e->is_executable) {
+        extern const uint8_t *fn_icon32_terminal_get(void);
+        return fn_icon32_terminal_get();
     }
+    /* Files with a cached app icon use the scale-up path in the
+     * large-icon renderer, not this function.  Fall through to
+     * generic icons only when icon_idx is unset. */
     return fn_icon32_document;
 }
 
 static const uint8_t *fn_get_icon_16(const fn_entry_t *e) {
     if (e->attrib & AM_DIR) return fn_icon16_folder;
+    /* Executables AND associated files both use the cached app icon */
+    if (e->icon_idx >= 0 && e->icon_idx < FN_MAX_APP_ICONS)
+        return fn_app_icons[e->icon_idx];
+    if (e->is_executable == 2)
+        return fn_icon16_cc_app;
     if (e->is_executable) {
-        if (e->icon_idx >= 0 && e->icon_idx < FN_MAX_APP_ICONS)
-            return fn_app_icons[e->icon_idx];
-        return fn_icon16_application;
-    }
-    const char *dot = strrchr(e->name, '.');
-    if (dot) {
-        if (strcmp(dot, ".txt") == 0 || strcmp(dot, ".inf") == 0)
-            return fn_icon16_text_doc;
+        extern const uint8_t *fn_icon16_terminal_get(void);
+        return fn_icon16_terminal_get();
     }
     return fn_icon16_document;
 }
@@ -239,23 +241,33 @@ static void fm_refresh(filemanager_t *fm) {
             FILINFO tmp;
             if (fm_file_exists(chk_path, &tmp)) {
                 e->is_executable = 1;
-                /* Read 16x16 icon from .inf into cache */
+                /* Load 16x16 icon from .ico file into cache */
                 if (fn_app_icon_count < FN_MAX_APP_ICONS) {
-                    FIL inf;
-                    if (f_open(&inf, chk_path, FA_READ) == FR_OK) {
-                        UINT br;
-                        char ch;
-                        /* Skip name line */
-                        while (f_read(&inf, &ch, 1, &br) == FR_OK && br == 1)
-                            if (ch == '\n') break;
-                        /* Read 256-byte icon */
-                        if (f_read(&inf, fn_app_icons[fn_app_icon_count],
-                                   256, &br) == FR_OK && br == 256) {
-                            e->icon_idx = fn_app_icon_count;
-                            fn_app_icon_count++;
+                    char ico_path[FN_PATH_MAX];
+                    if (fm->path[1] == '\0')
+                        snprintf(ico_path, sizeof(ico_path), "/%s.ico",
+                                 e->name);
+                    else
+                        snprintf(ico_path, sizeof(ico_path), "%s/%s.ico",
+                                 fm->path, e->name);
+                    FIL ico;
+                    if (f_open(&ico, ico_path, FA_READ) == FR_OK) {
+                        FSIZE_t fsize = f_size(&ico);
+                        if (fsize >= 22 && fsize <= 2048) {
+                            uint8_t ibuf[2048];
+                            UINT ibr;
+                            if (f_read(&ico, ibuf, (UINT)fsize, &ibr) == FR_OK
+                                && ibr == (UINT)fsize) {
+                                if (ico_parse_16(ibuf, ibr,
+                                        fn_app_icons[fn_app_icon_count])) {
+                                    e->icon_idx = fn_app_icon_count;
+                                    fn_app_icon_count++;
+                                }
+                            }
                         }
-                        f_close(&inf);
+                        f_close(&ico);
                     }
+                    /* No .ico → terminal icon is used by fn_get_icon_16() */
                 }
             }
 
@@ -270,6 +282,35 @@ static void fm_refresh(filemanager_t *fm) {
                 FILINFO tmp2;
                 if (fm_file_exists(chk_path, &tmp2))
                     e->is_executable = 2;  /* cc-compiled executable */
+            }
+        }
+
+        /* For non-executable files, check file association registry.
+         * If the associated app has an icon, cache it so the file
+         * displays the app icon instead of a generic document icon. */
+        if (!(fno.fattrib & AM_DIR) && !e->is_executable && e->icon_idx < 0) {
+            const char *dot = strrchr(e->name, '.');
+            if (dot && dot[1]) {
+                const fa_app_t *app = file_assoc_find(dot + 1);
+                if (app && app->has_icon) {
+                    /* Reuse an existing cache slot for the same app icon
+                     * (many files may share, e.g. all .txt → notepad) */
+                    int8_t found = -1;
+                    for (int k = 0; k < (int)fn_app_icon_count; k++) {
+                        if (memcmp(fn_app_icons[k], app->icon, 256) == 0) {
+                            found = (int8_t)k;
+                            break;
+                        }
+                    }
+                    if (found >= 0) {
+                        e->icon_idx = found;
+                    } else if (fn_app_icon_count < FN_MAX_APP_ICONS) {
+                        memcpy(fn_app_icons[fn_app_icon_count],
+                               app->icon, 256);
+                        e->icon_idx = fn_app_icon_count;
+                        fn_app_icon_count++;
+                    }
+                }
             }
         }
 
@@ -737,26 +778,23 @@ static void fm_paint_large_icons(filemanager_t *fm, int16_t cw, int16_t ch) {
                           cy + 1, 36, 34, COLOR_BLUE);
         }
 
-        /* 32x32 icon centered — use cached .inf icon scaled 2x if available */
-        if (e->icon_idx >= 0 && e->icon_idx < (int8_t)fn_app_icon_count) {
-            /* Scale 16x16 icon to 32x32 (each pixel becomes 2x2) */
-            const uint8_t *src = fn_app_icons[e->icon_idx];
-            int16_t ix = cx + (LARGE_CELL_W - 32) / 2;
-            int16_t iy = cy + 2;
-            for (int r = 0; r < 16; r++) {
-                for (int c = 0; c < 16; c++) {
-                    uint8_t px = src[r * 16 + c];
-                    if (px != 0xFF) {
-                        wd_pixel(ix + c * 2,     iy + r * 2,     px);
-                        wd_pixel(ix + c * 2 + 1, iy + r * 2,     px);
-                        wd_pixel(ix + c * 2,     iy + r * 2 + 1, px);
-                        wd_pixel(ix + c * 2 + 1, iy + r * 2 + 1, px);
-                    }
+        /* 32x32 icon centered */
+        {
+            const uint8_t *icon32 = NULL;
+            /* For non-directory files, try the 32x32 icon from file_assoc */
+            if (!(e->attrib & AM_DIR) && !e->is_executable) {
+                const char *dot = strrchr(e->name, '.');
+                if (dot && dot[1]) {
+                    const fa_app_t *app = file_assoc_find(dot + 1);
+                    if (app && app->has_icon32)
+                        icon32 = app->icon32;
                 }
             }
-        } else {
-            const uint8_t *icon = fn_get_icon_32(e);
-            wd_icon_32(cx + (LARGE_CELL_W - 32) / 2, cy + 2, icon);
+            if (icon32) {
+                wd_icon_32(cx + (LARGE_CELL_W - 32) / 2, cy + 2, icon32);
+            } else {
+                wd_icon_32(cx + (LARGE_CELL_W - 32) / 2, cy + 2, fn_get_icon_32(e));
+            }
         }
 
         /* Filename (ellipsis-truncated to fit cell width) */
@@ -1120,28 +1158,50 @@ static void fm_open_item(filemanager_t *fm, int idx) {
     if (e->attrib & AM_DIR) {
         fm_navigate(fm, full);
     } else if (e->is_executable == 1) {
-        /* ELF app — load icon from companion .inf and launch */
-        char inf_path[FN_PATH_MAX];
-        snprintf(inf_path, sizeof(inf_path), "%s.inf", full);
-
+        /* ELF app — load icons from .ico (preferred) or .inf */
         extern const uint8_t default_icon_16x16[256];
-        static uint8_t app_icon[256];
+        static uint8_t app_icon16[256];
+        static uint8_t app_icon32[1024];
         const uint8_t *icon = default_icon_16x16;
+        bool got_icon32 = false;
 
-        /* Try to read 16x16 icon from .inf (after name line) */
+        /* Try .ico file first */
+        char ico_path[FN_PATH_MAX];
+        snprintf(ico_path, sizeof(ico_path), "%s.ico", full);
         FIL f;
-        if (f_open(&f, inf_path, FA_READ) == FR_OK) {
-            UINT br;
-            char ch;
-            /* Skip past name line */
-            while (f_read(&f, &ch, 1, &br) == FR_OK && br == 1) {
-                if (ch == '\n') break;
+        if (f_open(&f, ico_path, FA_READ) == FR_OK) {
+            FSIZE_t fsize = f_size(&f);
+            if (fsize >= 22 && fsize <= 2048) {
+                uint8_t ico_buf[2048];
+                UINT br;
+                if (f_read(&f, ico_buf, (UINT)fsize, &br) == FR_OK
+                    && br == (UINT)fsize) {
+                    if (ico_parse_16(ico_buf, br, app_icon16))
+                        icon = app_icon16;
+                    if (ico_parse_32(ico_buf, br, app_icon32))
+                        got_icon32 = true;
+                }
             }
-            if (f_read(&f, app_icon, 256, &br) == FR_OK && br == 256)
-                icon = app_icon;
             f_close(&f);
         }
+
+        /* Fall back to .inf for 16x16 icon */
+        if (icon == default_icon_16x16) {
+            char inf_path[FN_PATH_MAX];
+            snprintf(inf_path, sizeof(inf_path), "%s.inf", full);
+            if (f_open(&f, inf_path, FA_READ) == FR_OK) {
+                UINT br;
+                char ch;
+                while (f_read(&f, &ch, 1, &br) == FR_OK && br == 1) {
+                    if (ch == '\n') break;
+                }
+                if (f_read(&f, app_icon16, 256, &br) == FR_OK && br == 256)
+                    icon = app_icon16;
+                f_close(&f);
+            }
+        }
         wm_set_pending_icon(icon);
+        if (got_icon32) wm_set_pending_icon32(app_icon32);
         launch_elf_app(full);
     } else if (e->is_executable == 2) {
         /* cc-compiled executable — launch pshell in exec mode */
@@ -2315,7 +2375,12 @@ void spawn_filemanager_window(void) {
                     DLG_ICON_ERROR, DLG_BTN_OK);
         return;
     }
-    wm_set_pending_icon(fn_icon16_open_folder);
+
+    extern const uint8_t *fn_icon16_navigator_get(void);
+    extern const uint8_t *fn_icon32_navigator_get(void);
+    wm_set_pending_icon(fn_icon16_navigator_get());
+    wm_set_pending_icon32(fn_icon32_navigator_get());
+
     hwnd_t hwnd = filemanager_create("/");
     if (hwnd != HWND_NULL) {
         wm_set_focus(hwnd);

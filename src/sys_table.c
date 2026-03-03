@@ -51,6 +51,7 @@
 #include "find_dialog.h"
 #include "file_assoc.h"
 #include "desktop.h"
+#include "ico.h"
 #include <math.h>
 
 #include "sys/fcntl.h"
@@ -685,6 +686,10 @@ unsigned long __in_systable() __aligned(4096) sys_table_ptrs[] = {
     midi_opl_playing,       // 509
     midi_opl_set_loop,      // 510
     midi_opl_free,          // 511
+    // API v.35 — 32x32 window icons
+    wm_set_pending_icon32,  // 512
+    ico_parse_16,           // 513
+    ico_parse_32,           // 514
     // TODO:
     0
 };

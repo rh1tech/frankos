@@ -7,10 +7,14 @@
  * extensions in a third line after the display name and icon data:
  *
  *   <display name>\n
- *   <256 bytes of 16x16 icon>\n
+ *   <256 bytes of 16x16 icon>
+ *   <1024 bytes of 32x32 icon>
  *   ext:<comma-separated extensions>\n
  *
  * Example:  ext:txt,bas,log
+ *
+ * Old v1 INF files only have the 16x16 block (256 bytes); the 32x32
+ * block is optional — has_icon32 will be false for those files.
  *
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
@@ -32,6 +36,7 @@
 #define FA_NAME_LEN        20   /* display name                         */
 #define FA_PATH_LEN        32   /* /fos/<binary>                        */
 #define FA_ICON_SIZE       256  /* 16x16 paletted icon                  */
+#define FA_ICON32_SIZE     1024 /* 32x32 paletted icon                  */
 
 /*==========================================================================
  * Data types
@@ -42,6 +47,8 @@ typedef struct {
     char     path[FA_PATH_LEN];         /* e.g. "/fos/notepad"               */
     uint8_t  icon[FA_ICON_SIZE];        /* 16x16 icon data                   */
     bool     has_icon;
+    uint8_t  icon32[FA_ICON32_SIZE];    /* 32x32 icon data (v2 inf)          */
+    bool     has_icon32;
     char     exts[FA_MAX_EXTS][FA_EXT_LEN]; /* e.g. {"txt","bas","log"}      */
     uint8_t  ext_count;                 /* number of registered extensions   */
 } fa_app_t;

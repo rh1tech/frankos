@@ -22,6 +22,8 @@
 #include "sdcard_init.h"
 #include "desktop.h"
 #include "snd.h"
+#include "file_assoc.h"
+#include "ico.h"
 #include "ff.h"
 #include "run_dialog.h"
 #include "hardware/watchdog.h"
@@ -128,22 +130,33 @@ static void fos_scan(void) {
                     got_name = true;
                 }
             }
-            /* Try to read 256-byte icon after the name line.
-             * The .inf format is: <name>\n<256 raw bytes> */
+            /* Load 16x16 icon from .ico file */
             {
-                /* Find the end of the name line in the file */
-                f_lseek(&f, 0);
-                char ch;
-                FSIZE_t pos = 0;
-                while (f_read(&f, &ch, 1, &br) == FR_OK && br == 1) {
-                    pos++;
-                    if (ch == '\n') break;
+                char ico_path[FOS_PATH_LEN + 4];
+                snprintf(ico_path, sizeof(ico_path), "%s.ico",
+                         fos_apps[fos_app_count].path);
+                FIL ico;
+                if (f_open(&ico, ico_path, FA_READ) == FR_OK) {
+                    FSIZE_t fsize = f_size(&ico);
+                    if (fsize >= 22 && fsize <= 2048) {
+                        uint8_t ibuf[2048];
+                        UINT ibr;
+                        if (f_read(&ico, ibuf, (UINT)fsize, &ibr) == FR_OK
+                            && ibr == (UINT)fsize) {
+                            if (ico_parse_16(ibuf, ibr,
+                                    fos_apps[fos_app_count].icon))
+                                fos_apps[fos_app_count].has_icon = true;
+                        }
+                    }
+                    f_close(&ico);
                 }
-                /* Read icon data at current position */
-                if (f_read(&f, fos_apps[fos_app_count].icon,
-                           ICON16_SIZE, &br) == FR_OK && br == ICON16_SIZE) {
-                    fos_apps[fos_app_count].has_icon = true;
-                }
+            }
+            /* No .ico → use terminal icon as default */
+            if (!fos_apps[fos_app_count].has_icon) {
+                extern const uint8_t *fn_icon16_terminal_get(void);
+                memcpy(fos_apps[fos_app_count].icon,
+                       fn_icon16_terminal_get(), ICON16_SIZE);
+                fos_apps[fos_app_count].has_icon = true;
             }
             f_close(&f);
         }
@@ -330,6 +343,18 @@ static void execute_sub_item(int index) {
     if (index < fos_app_count) {
         wm_set_pending_icon(fos_apps[index].has_icon
                             ? fos_apps[index].icon : default_icon_16x16);
+        /* Look up 32x32 icon from file_assoc registry */
+        {
+            int fa_cnt;
+            const fa_app_t *fa_list = file_assoc_get_apps(&fa_cnt);
+            for (int i = 0; i < fa_cnt; i++) {
+                if (strcmp(fa_list[i].path, fos_apps[index].path) == 0) {
+                    if (fa_list[i].has_icon32)
+                        wm_set_pending_icon32(fa_list[i].icon32);
+                    break;
+                }
+            }
+        }
         launch_elf_app(fos_apps[index].path);
     } else if (index == fos_app_count) {
         /* FRANK Navigator */

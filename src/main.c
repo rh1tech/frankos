@@ -425,6 +425,9 @@ static void compositor_task(void *params) {
             run_dialog_open();
         }
 
+        /* Update clock in taskbar every minute (even without input) */
+        taskbar_tick();
+
         /* Recomposite when input arrives OR when windows are
          * invalidated (e.g. terminal output, cursor blink).
          * Always drain both flags to avoid a stale-flag repeat. */

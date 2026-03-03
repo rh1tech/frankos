@@ -1,16 +1,26 @@
 #!/usr/bin/env python3
-"""Convert .ico files to 16x16 4-bit raw icon data for FRANK OS.
+"""Convert .ico files to 16x16 + 32x32 4-bit raw icon data for FRANK OS.
 
-Reads a Windows 95/2000 .ico file, extracts or downscales to 16x16,
+Reads a Windows 95/2000 .ico file, extracts or scales to 16x16 and 32x32,
 applies the AND mask (transparent -> 0xFF), and remaps palette indices
 from Windows ordering to CGA ordering.
 
+INF file format (v2 — two icon sizes):
+    <display name>\\n
+    <256 bytes: 16x16 paletted icon>
+    <1024 bytes: 32x32 paletted icon>
+    [ext:<comma-separated extensions>\\n]
+
 Modes:
-    --inf "Name" input.ico output.inf
-        Writes display name + newline + 256 raw bytes to output.inf
+    --inf "Name" input.ico output.inf [--ext ext:txt,log]
+        Writes display name + newline + 256 raw bytes (16x16)
+        + 1024 raw bytes (32x32) to output.inf
 
     --c-array name input.ico
-        Writes a C const uint8_t name[256] array to stdout
+        Writes a C const uint8_t name[256] array (16x16) to stdout
+
+    --c-array-32 name input.ico
+        Writes a C const uint8_t name[1024] array (32x32) to stdout
 """
 
 import struct
@@ -122,12 +132,50 @@ def read_ico_16(filename):
     raise ValueError("No 16x16 or 32x32 image found in .ico file")
 
 
-def write_inf(name, pixels, output_path, ext_line=None):
-    """Write name + newline + 256 raw bytes + optional ext line to output .inf file."""
+def read_ico_32(filename):
+    """Read an .ico and return 32x32 pixel data (1024 bytes).
+
+    If the file has a native 32x32 image, extract it directly.
+    Otherwise try to upscale from 16x16 using nearest-neighbour.
+    """
+    with open(filename, "rb") as f:
+        data = f.read()
+
+    # Try 32x32 first
+    entry = read_ico_image(data, 32)
+    if entry:
+        w, h, size, offset = entry
+        return extract_4bpp_image(data, offset, 32)
+
+    # Fall back to 16x16 and upscale
+    entry = read_ico_image(data, 16)
+    if entry:
+        w, h, size, offset = entry
+        pixels_16 = extract_4bpp_image(data, offset, 16)
+        return upscale_nn(pixels_16, 16, 32)
+
+    raise ValueError("No 16x16 or 32x32 image found in .ico file")
+
+
+def upscale_nn(pixels_src, src_size, dst_size):
+    """Nearest-neighbour upscale from src_size to dst_size."""
+    result = []
+    for y in range(dst_size):
+        sy = y * src_size // dst_size
+        for x in range(dst_size):
+            sx = x * src_size // dst_size
+            result.append(pixels_src[sy * src_size + sx])
+    return result
+
+
+def write_inf(name, pixels_16, pixels_32, output_path, ext_line=None):
+    """Write name + newline + 256 raw bytes (16x16) + 1024 raw bytes (32x32)
+    + optional ext line to output .inf file."""
     with open(output_path, "wb") as f:
         f.write(name.encode("ascii"))
         f.write(b"\n")
-        f.write(bytes(pixels))
+        f.write(bytes(pixels_16))   # 256 bytes: 16x16
+        f.write(bytes(pixels_32))   # 1024 bytes: 32x32
         if ext_line:
             f.write(ext_line.encode("ascii"))
             f.write(b"\n")
@@ -145,11 +193,25 @@ def format_c_array(name, pixels):
     return "\n".join(lines)
 
 
+def format_c_array_32(name, pixels):
+    """Format 32x32 pixel data as a C array."""
+    lines = []
+    lines.append(f"const uint8_t {name}[1024] = {{")
+    for row in range(32):
+        row_data = pixels[row * 32:(row + 1) * 32]
+        hex_vals = ", ".join(f"0x{v:02X}" for v in row_data)
+        lines.append(f"    {hex_vals},")
+    lines.append("};")
+    return "\n".join(lines)
+
+
 def main():
     if len(sys.argv) < 2:
         print("Usage:", file=sys.stderr)
-        print(f"  {sys.argv[0]} --inf \"Name\" input.ico output.inf", file=sys.stderr)
+        print(f"  {sys.argv[0]} --inf [--ext EXT_LINE] \"Name\" input.ico output.inf",
+              file=sys.stderr)
         print(f"  {sys.argv[0]} --c-array name input.ico", file=sys.stderr)
+        print(f"  {sys.argv[0]} --c-array-32 name input.ico", file=sys.stderr)
         sys.exit(1)
 
     mode = sys.argv[1]
@@ -168,8 +230,9 @@ def main():
         name = args[0]
         ico_path = args[1]
         out_path = args[2]
-        pixels = read_ico_16(ico_path)
-        write_inf(name, pixels, out_path, ext_line)
+        pixels_16 = read_ico_16(ico_path)
+        pixels_32 = read_ico_32(ico_path)
+        write_inf(name, pixels_16, pixels_32, out_path, ext_line)
 
     elif mode == "--c-array":
         if len(sys.argv) != 4:
@@ -180,6 +243,16 @@ def main():
         ico_path = sys.argv[3]
         pixels = read_ico_16(ico_path)
         print(format_c_array(array_name, pixels))
+
+    elif mode == "--c-array-32":
+        if len(sys.argv) != 4:
+            print(f"Usage: {sys.argv[0]} --c-array-32 name input.ico",
+                  file=sys.stderr)
+            sys.exit(1)
+        array_name = sys.argv[2]
+        ico_path = sys.argv[3]
+        pixels = read_ico_32(ico_path)
+        print(format_c_array_32(array_name, pixels))
 
     else:
         print(f"Unknown mode: {mode}", file=sys.stderr)

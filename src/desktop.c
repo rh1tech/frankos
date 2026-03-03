@@ -20,6 +20,7 @@
 #include "menu.h"
 #include "dialog.h"
 #include "app.h"
+#include "ico.h"
 #include "ff.h"
 #include "sdcard_init.h"
 #include "FreeRTOS.h"
@@ -84,6 +85,28 @@ static const char *path_ext(const char *path) {
     return dot + 1;
 }
 
+/* Nearest-neighbour upscale a 16x16 icon to 32x32 */
+static void nn_upscale_16_to_32(const uint8_t *src, uint8_t *dst) {
+    for (int y = 0; y < 32; y++) {
+        int sy = y * 16 / 32;
+        for (int x = 0; x < 32; x++) {
+            int sx = x * 16 / 32;
+            dst[y * 32 + x] = src[sy * 16 + sx];
+        }
+    }
+}
+
+/* Nearest-neighbour downscale a 32x32 icon to 16x16 */
+static void nn_downscale_32_to_16(const uint8_t *src, uint8_t *dst) {
+    for (int y = 0; y < 16; y++) {
+        int sy = y * 32 / 16;
+        for (int x = 0; x < 16; x++) {
+            int sx = x * 32 / 16;
+            dst[y * 16 + x] = src[sy * 32 + sx];
+        }
+    }
+}
+
 /* Check if path is an app (has .inf or .xa1 companion) */
 static bool is_app_path(const char *path) {
     if (path[0] == ':') return true;   /* built-in apps */
@@ -105,8 +128,46 @@ static bool is_cc_executable(const char *path) {
     return f_stat(chk, &fi) == FR_OK;
 }
 
-/* Load icon from .inf file or use default */
+/* Try to load 32x32 icon from .ico file.
+ * If explicit_path is non-NULL, use it; otherwise derive from sc->path. */
+static bool load_ico_from(const char *ico_path, desktop_shortcut_t *sc) {
+
+    FIL f;
+    if (f_open(&f, ico_path, FA_READ) != FR_OK) return false;
+
+    FSIZE_t fsize = f_size(&f);
+    if (fsize < 22 || fsize > 2048) {
+        f_close(&f);
+        return false;
+    }
+
+    uint8_t buf[2048];
+    UINT br;
+    if (f_read(&f, buf, (UINT)fsize, &br) != FR_OK || br != (UINT)fsize) {
+        f_close(&f);
+        return false;
+    }
+    f_close(&f);
+
+    if (ico_parse_32(buf, br, sc->icon)) {
+        sc->has_icon = true;
+        return true;
+    }
+    return false;
+}
+
+static bool load_ico_icon(desktop_shortcut_t *sc) {
+    char ico_path[DESKTOP_PATH_MAX + 4];
+    snprintf(ico_path, sizeof(ico_path), "%s.ico", sc->path);
+    return load_ico_from(ico_path, sc);
+}
+
+/* Load 32x32 icon: try .ico first, then fall back to .inf data */
 static void load_app_icon(desktop_shortcut_t *sc) {
+    /* Prefer .ico file */
+    if (load_ico_icon(sc)) return;
+
+    /* Fall back to .inf file */
     char inf[DESKTOP_PATH_MAX + 4];
     snprintf(inf, sizeof(inf), "%s.inf", sc->path);
 
@@ -119,8 +180,22 @@ static void load_app_icon(desktop_shortcut_t *sc) {
     while (f_read(&f, &ch, 1, &br) == FR_OK && br == 1) {
         if (ch == '\n') break;
     }
-    if (f_read(&f, sc->icon, DESKTOP_ICON_SIZE, &br) == FR_OK
-        && br == DESKTOP_ICON_SIZE) {
+
+    /* Skip 16x16 icon (256 bytes) */
+    uint8_t tmp16[DESKTOP_ICON16_SIZE];
+    if (f_read(&f, tmp16, DESKTOP_ICON16_SIZE, &br) != FR_OK
+            || br != DESKTOP_ICON16_SIZE) {
+        f_close(&f);
+        return;
+    }
+
+    /* Read 32x32 icon (1024 bytes) */
+    if (f_read(&f, sc->icon, DESKTOP_ICON32_SIZE, &br) == FR_OK
+            && br == DESKTOP_ICON32_SIZE) {
+        sc->has_icon = true;
+    } else {
+        /* v1 inf: no 32x32 data — upscale the 16x16 we already read */
+        nn_upscale_16_to_32(tmp16, sc->icon);
         sc->has_icon = true;
     }
     f_close(&f);
@@ -147,12 +222,17 @@ static void load_app_name(desktop_shortcut_t *sc) {
     f_close(&f);
 }
 
-/* Load icon for a file shortcut via its associated app */
+/* Load 32x32 icon for a file shortcut via its associated app */
 static void load_file_icon(desktop_shortcut_t *sc) {
     const char *ext = path_ext(sc->path);
     const fa_app_t *app = file_assoc_find(ext);
-    if (app && app->has_icon) {
-        memcpy(sc->icon, app->icon, DESKTOP_ICON_SIZE);
+    if (!app) return;
+    if (app->has_icon32) {
+        memcpy(sc->icon, app->icon32, DESKTOP_ICON32_SIZE);
+        sc->has_icon = true;
+    } else if (app->has_icon) {
+        /* Upscale 16x16 to 32x32 */
+        nn_upscale_16_to_32(app->icon, sc->icon);
         sc->has_icon = true;
     }
 }
@@ -270,15 +350,21 @@ static void dt_load(void) {
             if (path[0] == ':') {
                 if (strcmp(path, DESKTOP_BUILTIN_NAVIGATOR) == 0) {
                     strncpy(sc->name, "Navigator", DESKTOP_NAME_MAX - 1);
-                    extern const uint8_t fn_icon16_open_folder[];
-                    memcpy(sc->icon, fn_icon16_open_folder, DESKTOP_ICON_SIZE);
+                    extern const uint8_t *fn_icon32_navigator_get(void);
+                    memcpy(sc->icon, fn_icon32_navigator_get(), DESKTOP_ICON32_SIZE);
                     sc->has_icon = true;
                 } else if (strcmp(path, DESKTOP_BUILTIN_TERMINAL) == 0) {
                     strncpy(sc->name, "Terminal", DESKTOP_NAME_MAX - 1);
-                    extern const uint8_t default_icon_16x16[];
-                    memcpy(sc->icon, default_icon_16x16, DESKTOP_ICON_SIZE);
+                    extern const uint8_t *fn_icon32_terminal_get(void);
+                    memcpy(sc->icon, fn_icon32_terminal_get(), DESKTOP_ICON32_SIZE);
                     sc->has_icon = true;
                 }
+            } else if (is_cc_executable(path)) {
+                /* CC-compiled .xa1 app — no .inf, use built-in cc_app icon */
+                strncpy(sc->name, path_basename(path), DESKTOP_NAME_MAX - 1);
+                extern const uint8_t fn_icon32_cc_app[];
+                memcpy(sc->icon, fn_icon32_cc_app, DESKTOP_ICON32_SIZE);
+                sc->has_icon = true;
             } else {
                 load_app_name(sc);
                 load_app_icon(sc);
@@ -307,8 +393,17 @@ void desktop_init(void) {
     dt_dirty = true;
 }
 
+/* Cached default 32x32 icon (upscaled from default_icon_16x16 on first use) */
+static uint8_t dt_default_icon32[DESKTOP_ICON32_SIZE];
+static bool    dt_default_icon32_ready = false;
+
 void desktop_paint(void) {
     extern const uint8_t default_icon_16x16[256];
+
+    if (!dt_default_icon32_ready) {
+        nn_upscale_16_to_32(default_icon_16x16, dt_default_icon32);
+        dt_default_icon32_ready = true;
+    }
 
     for (int i = 0; i < dt_count; i++) {
         desktop_shortcut_t *sc = &dt_shortcuts[i];
@@ -317,14 +412,14 @@ void desktop_paint(void) {
         int16_t cx, cy;
         dt_get_cell_rect(i, &cx, &cy);
 
-        /* Draw 16x16 icon centered horizontally at top of cell */
-        int icon_x = cx + (DT_CELL_W - 16) / 2;
-        int icon_y = cy + 4;
-        const uint8_t *icon_data = sc->has_icon ? sc->icon : default_icon_16x16;
-        gfx_draw_icon_16(icon_x, icon_y, icon_data);
+        /* Draw 32x32 icon centered horizontally at top of cell */
+        int icon_x = cx + (DT_CELL_W - DT_ICON_SIZE) / 2;
+        int icon_y = cy + 2;
+        const uint8_t *icon_data = sc->has_icon ? sc->icon : dt_default_icon32;
+        gfx_draw_icon_32(icon_x, icon_y, icon_data);
 
         /* Draw name centered below icon (truncated) */
-        int text_y = icon_y + 16 + 2;
+        int text_y = icon_y + DT_ICON_SIZE + 2;
         const char *name = sc->name;
         int name_len = (int)strlen(name);
         int max_chars = DT_CELL_W / FONT_UI_WIDTH;
@@ -376,15 +471,21 @@ bool desktop_add_shortcut(const char *path) {
             /* Built-in app — set name and icon manually */
             if (strcmp(path, DESKTOP_BUILTIN_NAVIGATOR) == 0) {
                 strncpy(sc->name, "Navigator", DESKTOP_NAME_MAX - 1);
-                extern const uint8_t fn_icon16_open_folder[];
-                memcpy(sc->icon, fn_icon16_open_folder, DESKTOP_ICON_SIZE);
+                extern const uint8_t *fn_icon32_navigator_get(void);
+                memcpy(sc->icon, fn_icon32_navigator_get(), DESKTOP_ICON32_SIZE);
                 sc->has_icon = true;
             } else if (strcmp(path, DESKTOP_BUILTIN_TERMINAL) == 0) {
                 strncpy(sc->name, "Terminal", DESKTOP_NAME_MAX - 1);
-                extern const uint8_t default_icon_16x16[];
-                memcpy(sc->icon, default_icon_16x16, DESKTOP_ICON_SIZE);
+                extern const uint8_t *fn_icon32_terminal_get(void);
+                memcpy(sc->icon, fn_icon32_terminal_get(), DESKTOP_ICON32_SIZE);
                 sc->has_icon = true;
             }
+        } else if (is_cc_executable(path)) {
+            /* CC-compiled .xa1 app — no .inf, use built-in cc_app icon */
+            strncpy(sc->name, path_basename(path), DESKTOP_NAME_MAX - 1);
+            extern const uint8_t fn_icon32_cc_app[];
+            memcpy(sc->icon, fn_icon32_cc_app, DESKTOP_ICON32_SIZE);
+            sc->has_icon = true;
         } else {
             load_app_name(sc);
             load_app_icon(sc);
@@ -498,8 +599,13 @@ static void dt_launch_shortcut(desktop_shortcut_t *sc) {
         } else if (is_cc_executable(sc->path)) {
             launch_elf_app_with_file("/fos/pshell", sc->path);
         } else {
-            if (sc->has_icon)
-                wm_set_pending_icon(sc->icon);
+            if (sc->has_icon) {
+                /* sc->icon is 32x32; downscale for 16x16 title bar icon */
+                static uint8_t tmp16[256];
+                nn_downscale_32_to_16(sc->icon, tmp16);
+                wm_set_pending_icon(tmp16);
+                wm_set_pending_icon32(sc->icon);
+            }
             launch_elf_app(sc->path);
         }
     } else {
@@ -610,8 +716,13 @@ bool desktop_has_shortcuts(void) {
 }
 
 const uint8_t *desktop_get_icon(void) {
-    extern const uint8_t desktop_icon_16x16[256];
-    return desktop_icon_16x16;
+    extern const uint8_t *fn_icon16_desktop_get(void);
+    return fn_icon16_desktop_get();
+}
+
+const uint8_t *desktop_get_icon32(void) {
+    extern const uint8_t *fn_icon32_desktop_get(void);
+    return fn_icon32_desktop_get();
 }
 
 /* ---------- Desktop keyboard focus ---------- */

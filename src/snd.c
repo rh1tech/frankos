@@ -44,8 +44,10 @@ typedef struct {
 
 static snd_channel_t channels[SND_MAX_CHANNELS];
 
-/* Global volume as right-shift (0 = max, higher = quieter) */
-static uint8_t snd_volume = 0;
+/* Global volume as right-shift (0 = max, 4 = mute).
+ * Volatile because snd_fill_dma reads it from DMA IRQ context
+ * while snd_set_volume writes it from task context. */
+static volatile uint8_t snd_volume = 0;
 
 static i2s_config_t snd_i2s_config;
 
@@ -117,8 +119,11 @@ static void __not_in_flash_func(snd_fill_dma)(int buf_index,
             c->phase += c->phase_inc;
         }
 
-        /* Volume: right-shift */
-        if (snd_volume) {
+        /* Volume: right-shift (level 4 = mute) */
+        if (snd_volume >= 4) {
+            left  = 0;
+            right = 0;
+        } else if (snd_volume) {
             left  >>= snd_volume;
             right >>= snd_volume;
         }
@@ -244,4 +249,13 @@ void snd_deinit(void) {
     for (int ch = 0; ch < SND_MAX_CHANNELS; ch++)
         channels[ch].active = false;
     i2s_deinit(&snd_i2s_config);
+}
+
+uint8_t snd_get_volume(void) {
+    return snd_volume;
+}
+
+void snd_set_volume(uint8_t vol) {
+    if (vol > 4) vol = 4;
+    snd_volume = vol;
 }

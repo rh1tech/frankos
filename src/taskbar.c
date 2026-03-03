@@ -12,9 +12,12 @@
 #include "window_theme.h"
 #include "startmenu.h"
 #include "swap.h"
+#include "snd.h"
 #include "gfx.h"
 #include "font.h"
 #include "display.h"
+#include "FreeRTOS.h"
+#include "task.h"
 #include <string.h>
 
 extern const uint8_t default_icon_16x16[256];
@@ -28,7 +31,19 @@ extern const uint8_t default_icon_16x16[256];
 #define TASK_BUTTON_W    120   /* max width of per-window buttons */
 #define TASK_BUTTON_PAD    2   /* padding between task buttons */
 #define TASK_AREA_X       (TASKBAR_START_W + 6) /* where task buttons start */
-#define TASK_AREA_W       (DISPLAY_WIDTH - TASK_AREA_X - 4)
+
+/* Notification area (system tray) — right side of taskbar */
+#define TRAY_WIDTH        64
+#define TRAY_X            (DISPLAY_WIDTH - TRAY_WIDTH - 2)
+#define TASK_AREA_W       (TRAY_X - TASK_AREA_X - 4)
+
+/* Speaker icon position inside tray */
+#define ICON_X            (TRAY_X + 4)
+#define ICON_Y            (BUTTON_Y + 3)
+
+/* Clock text position inside tray (after icon) */
+#define CLOCK_X           (TRAY_X + 24)
+#define CLOCK_Y           (BUTTON_Y + (BUTTON_HEIGHT - FONT_UI_HEIGHT) / 2)
 
 /*==========================================================================
  * Internal state
@@ -36,6 +51,16 @@ extern const uint8_t default_icon_16x16[256];
 
 static bool taskbar_ready = false;
 static bool taskbar_dirty = true;  /* starts dirty for first frame */
+
+/* Last drawn clock minute — used by taskbar_tick() to detect changes */
+static uint32_t last_clock_minute = 0xFFFFFFFF;
+
+/* Volume popup state (defined here so taskbar_mouse_click can use them) */
+static bool vol_popup_open_flag = false;
+static bool vol_popup_dragging = false;
+
+/* Volume icon from ICO (parsed on first use in fn_icons.c) */
+extern const uint8_t *fn_icon16_volume_get(void);
 
 /* Compute the button width based on how many task buttons are visible */
 static int taskbar_btn_width(void) {
@@ -103,6 +128,13 @@ bool taskbar_needs_redraw(void) {
     return taskbar_dirty;
 }
 
+void taskbar_tick(void) {
+    if (!taskbar_ready) return;
+    uint32_t now_min = (xTaskGetTickCount() / configTICK_RATE_HZ) / 60;
+    if (now_min != last_clock_minute)
+        taskbar_invalidate();
+}
+
 void taskbar_draw(void) {
     if (!taskbar_ready || !taskbar_dirty) return;
 
@@ -150,7 +182,7 @@ void taskbar_draw(void) {
         if (!win || !(win->flags & WF_ALIVE)) continue;
         if (!(win->flags & WF_BORDER)) continue; /* skip borderless popups */
 
-        if (btn_x + btn_w > DISPLAY_WIDTH) break; /* no room for more buttons */
+        if (btn_x + btn_w > TRAY_X - 4) break; /* no room for more buttons */
 
         bool is_focused = (i == focus) && (win->flags & WF_VISIBLE);
 
@@ -180,6 +212,41 @@ void taskbar_draw(void) {
 
         btn_x += btn_w + TASK_BUTTON_PAD;
     }
+
+    /* ---- Notification area (sunken well with speaker icon + clock) ---- */
+    {
+        int tx = TRAY_X;
+        int ty = BUTTON_Y;
+        int tw = TRAY_WIDTH;
+        int th = BUTTON_HEIGHT;
+
+        /* Sunken well border */
+        gfx_fill_rect(tx, ty, tw, th, THEME_BUTTON_FACE);
+        gfx_hline(tx, ty, tw, COLOR_DARK_GRAY);
+        gfx_vline(tx, ty, th, COLOR_DARK_GRAY);
+        gfx_hline(tx + 1, ty + th - 1, tw - 1, COLOR_WHITE);
+        gfx_vline(tx + tw - 1, ty + 1, th - 1, COLOR_WHITE);
+
+        /* Speaker icon */
+        gfx_draw_icon_16(ICON_X, ICON_Y, fn_icon16_volume_get());
+
+        /* Uptime clock: HH:MM */
+        uint32_t ticks = xTaskGetTickCount();
+        uint32_t total_sec = ticks / configTICK_RATE_HZ;
+        uint32_t hours = total_sec / 3600;
+        uint32_t minutes = (total_sec % 3600) / 60;
+        last_clock_minute = total_sec / 60;
+
+        char clk[6];
+        clk[0] = '0' + (hours / 10) % 10;
+        clk[1] = '0' + hours % 10;
+        clk[2] = ':';
+        clk[3] = '0' + minutes / 10;
+        clk[4] = '0' + minutes % 10;
+        clk[5] = '\0';
+
+        gfx_text_ui(CLOCK_X, CLOCK_Y, clk, COLOR_BLACK, THEME_BUTTON_FACE);
+    }
 }
 
 bool taskbar_mouse_click(int16_t x, int16_t y) {
@@ -189,6 +256,19 @@ bool taskbar_mouse_click(int16_t x, int16_t y) {
     if (x >= 2 && x < 2 + TASKBAR_START_W &&
         y >= BUTTON_Y && y < BUTTON_Y + BUTTON_HEIGHT) {
         startmenu_toggle();
+        return true;
+    }
+
+    /* Volume icon in notification area — toggle popup */
+    if (x >= TRAY_X && x < TRAY_X + TRAY_WIDTH &&
+        y >= BUTTON_Y && y < BUTTON_Y + BUTTON_HEIGHT) {
+        if (vol_popup_is_open())
+            vol_popup_close();
+        else {
+            vol_popup_open_flag = true;
+            vol_popup_dragging = false;
+            wm_mark_dirty();
+        }
         return true;
     }
 
@@ -417,6 +497,191 @@ bool taskbar_popup_handle_key(uint8_t hid_code, uint8_t modifiers) {
     case 0x29: /* ESC */
         taskbar_popup_close();
         return true;
+    }
+    return false;
+}
+
+/*==========================================================================
+ * Volume popup — Win95-style vertical slider above the speaker icon
+ *=========================================================================*/
+
+#define VP_WIDTH     58
+#define VP_HEIGHT   100
+#define VP_X        (TRAY_X + (TRAY_WIDTH - VP_WIDTH) / 2)
+#define VP_Y        (TASKBAR_Y - VP_HEIGHT - 2)
+
+/* Track geometry inside the popup */
+#define VP_TRACK_X   (VP_X + (VP_WIDTH - 10) / 2)
+#define VP_TRACK_Y   (VP_Y + 20)
+#define VP_TRACK_W   10
+#define VP_TRACK_H   50
+
+/* Thumb */
+#define VP_THUMB_W   16
+#define VP_THUMB_H    8
+#define VP_THUMB_X   (VP_TRACK_X + (VP_TRACK_W - VP_THUMB_W) / 2)
+
+/* Mute checkbox */
+#define VP_MUTE_X    (VP_X + 8)
+#define VP_MUTE_Y    (VP_Y + VP_HEIGHT - 20)
+#define VP_CHECK_SZ  10
+
+/* Volume to slider Y position: vol 0 (max) = top, vol 4 (mute) = bottom */
+static int vol_thumb_y(void) {
+    uint8_t v = snd_get_volume();
+    if (v > 4) v = 4;
+    int range = VP_TRACK_H - VP_THUMB_H;
+    return VP_TRACK_Y + (v * range) / 4;
+}
+
+/* Slider Y position to volume level */
+static uint8_t vol_from_y(int16_t y) {
+    int range = VP_TRACK_H - VP_THUMB_H;
+    int pos = y - VP_TRACK_Y;
+    if (pos < 0) pos = 0;
+    if (pos > range) pos = range;
+    return (uint8_t)((pos * 4 + range / 2) / range);
+}
+
+bool vol_popup_is_open(void) {
+    return vol_popup_open_flag;
+}
+
+void vol_popup_close(void) {
+    vol_popup_open_flag = false;
+    vol_popup_dragging = false;
+    wm_mark_dirty();
+}
+
+void vol_popup_draw(void) {
+    if (!vol_popup_open_flag) return;
+
+    int px = VP_X, py = VP_Y, pw = VP_WIDTH, ph = VP_HEIGHT;
+
+    /* Shadow */
+    gfx_fill_rect_dithered(px + 1, py + 1, pw, ph, COLOR_BLACK);
+
+    /* Background */
+    gfx_fill_rect(px, py, pw, ph, THEME_BUTTON_FACE);
+
+    /* 3D border */
+    gfx_hline(px, py, pw, COLOR_WHITE);
+    gfx_vline(px, py, ph, COLOR_WHITE);
+    gfx_hline(px, py + ph - 1, pw, COLOR_BLACK);
+    gfx_vline(px + pw - 1, py, ph, COLOR_BLACK);
+    gfx_hline(px + 1, py + ph - 2, pw - 2, COLOR_DARK_GRAY);
+    gfx_vline(px + pw - 2, py + 1, ph - 2, COLOR_DARK_GRAY);
+
+    /* "Volume" label */
+    gfx_text_ui(px + (pw - 6 * 6) / 2, py + 4, "Volume",
+                COLOR_BLACK, THEME_BUTTON_FACE);
+
+    /* Sunken track */
+    int tx = VP_TRACK_X, ty = VP_TRACK_Y;
+    gfx_fill_rect(tx, ty, VP_TRACK_W, VP_TRACK_H, THEME_BUTTON_FACE);
+    gfx_hline(tx, ty, VP_TRACK_W, COLOR_DARK_GRAY);
+    gfx_vline(tx, ty, VP_TRACK_H, COLOR_DARK_GRAY);
+    gfx_hline(tx + 1, ty + VP_TRACK_H - 1, VP_TRACK_W - 1, COLOR_WHITE);
+    gfx_vline(tx + VP_TRACK_W - 1, ty + 1, VP_TRACK_H - 1, COLOR_WHITE);
+
+    /* Tick marks beside the track */
+    for (int i = 0; i <= 4; i++) {
+        int range = VP_TRACK_H - VP_THUMB_H;
+        int tick_y = VP_TRACK_Y + (i * range) / 4 + VP_THUMB_H / 2;
+        gfx_hline(tx - 4, tick_y, 3, COLOR_BLACK);
+        gfx_hline(tx + VP_TRACK_W + 1, tick_y, 3, COLOR_BLACK);
+    }
+
+    /* Thumb (raised button) */
+    int thumb_y = vol_thumb_y();
+    draw_raised_button(VP_THUMB_X, thumb_y, VP_THUMB_W, VP_THUMB_H);
+
+    /* Mute checkbox */
+    bool muted = (snd_get_volume() >= 4);
+    int cx = VP_MUTE_X, cy = VP_MUTE_Y;
+
+    /* Sunken checkbox box */
+    gfx_fill_rect(cx, cy, VP_CHECK_SZ, VP_CHECK_SZ, COLOR_WHITE);
+    gfx_hline(cx, cy, VP_CHECK_SZ, COLOR_DARK_GRAY);
+    gfx_vline(cx, cy, VP_CHECK_SZ, COLOR_DARK_GRAY);
+    gfx_hline(cx + 1, cy + VP_CHECK_SZ - 1, VP_CHECK_SZ - 1, COLOR_WHITE);
+    gfx_vline(cx + VP_CHECK_SZ - 1, cy + 1, VP_CHECK_SZ - 1, COLOR_WHITE);
+
+    if (muted) {
+        /* Draw X check mark */
+        for (int i = 2; i < VP_CHECK_SZ - 2; i++) {
+            display_set_pixel(cx + i, cy + i, COLOR_BLACK);
+            display_set_pixel(cx + VP_CHECK_SZ - 1 - i, cy + i, COLOR_BLACK);
+        }
+    }
+
+    gfx_text_ui(cx + VP_CHECK_SZ + 3, cy + (VP_CHECK_SZ - FONT_UI_HEIGHT) / 2,
+                "Mute", COLOR_BLACK, THEME_BUTTON_FACE);
+}
+
+bool vol_popup_mouse(uint8_t type, int16_t x, int16_t y) {
+    if (!vol_popup_open_flag) return false;
+
+    /* Dragging the thumb */
+    if (vol_popup_dragging) {
+        if (type == WM_MOUSEMOVE || type == WM_LBUTTONDOWN) {
+            int thumb_center_y = y - VP_THUMB_H / 2;
+            uint8_t new_vol = vol_from_y(thumb_center_y);
+            if (new_vol != snd_get_volume()) {
+                snd_set_volume(new_vol);
+                wm_mark_dirty();
+            }
+            return true;
+        }
+        if (type == WM_LBUTTONUP) {
+            vol_popup_dragging = false;
+            return true;
+        }
+        return true;
+    }
+
+    /* Check if click is inside popup bounds */
+    if (x >= VP_X && x < VP_X + VP_WIDTH &&
+        y >= VP_Y && y < VP_Y + VP_HEIGHT) {
+
+        if (type == WM_LBUTTONDOWN) {
+            /* Check mute checkbox area */
+            if (x >= VP_MUTE_X && x < VP_MUTE_X + VP_CHECK_SZ + 30 &&
+                y >= VP_MUTE_Y && y < VP_MUTE_Y + VP_CHECK_SZ) {
+                if (snd_get_volume() >= 4)
+                    snd_set_volume(0);
+                else
+                    snd_set_volume(4);
+                wm_mark_dirty();
+                return true;
+            }
+
+            /* Check thumb area — start drag */
+            int ty = vol_thumb_y();
+            if (x >= VP_THUMB_X && x < VP_THUMB_X + VP_THUMB_W &&
+                y >= ty && y < ty + VP_THUMB_H) {
+                vol_popup_dragging = true;
+                return true;
+            }
+
+            /* Click on track — jump to position */
+            if (x >= VP_TRACK_X && x < VP_TRACK_X + VP_TRACK_W &&
+                y >= VP_TRACK_Y && y < VP_TRACK_Y + VP_TRACK_H) {
+                uint8_t new_vol = vol_from_y(y - VP_THUMB_H / 2);
+                snd_set_volume(new_vol);
+                vol_popup_dragging = true;
+                wm_mark_dirty();
+                return true;
+            }
+        }
+
+        return true; /* consume all events inside popup */
+    }
+
+    /* Click outside — close */
+    if (type == WM_LBUTTONDOWN || type == WM_RBUTTONDOWN) {
+        vol_popup_close();
+        return false;
     }
     return false;
 }

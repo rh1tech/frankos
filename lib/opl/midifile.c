@@ -12,6 +12,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include "opl_alloc.h"
 #include "ff.h"
 #include "midifile.h"
 

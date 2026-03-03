@@ -47,4 +47,13 @@ bool taskbar_popup_handle_key(uint8_t hid_code, uint8_t modifiers);
 bool taskbar_popup_is_open(void);
 void taskbar_popup_close(void);
 
+/* Volume popup overlay */
+bool  vol_popup_is_open(void);
+void  vol_popup_close(void);
+void  vol_popup_draw(void);
+bool  vol_popup_mouse(uint8_t type, int16_t x, int16_t y);
+
+/* Periodic clock update check — call from compositor each iteration */
+void  taskbar_tick(void);
+
 #endif /* TASKBAR_H */

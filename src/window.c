@@ -61,10 +61,13 @@ static uint8_t expose_count = 0;
 
 /* Per-window icon storage — copied here so icons survive fos_apps[] rescan */
 #define ICON16_SIZE 256
+#define ICON32_SIZE 1024
 static uint8_t   icon_pool[WM_MAX_WINDOWS][ICON16_SIZE];
+static uint8_t   icon32_pool[WM_MAX_WINDOWS][ICON32_SIZE];
 
 /* Pending icon — set before wm_create_window(), consumed by it */
 static const uint8_t *pending_icon = NULL;
+static const uint8_t *pending_icon32 = NULL;
 
 /*==========================================================================
  * Internal helpers
@@ -152,6 +155,13 @@ hwnd_t wm_create_window(int16_t x, int16_t y, int16_t w, int16_t h,
                 pending_icon = NULL;
             } else {
                 win->icon = NULL;
+            }
+            if (pending_icon32) {
+                memcpy(icon32_pool[i], pending_icon32, ICON32_SIZE);
+                win->icon32 = icon32_pool[i];
+                pending_icon32 = NULL;
+            } else {
+                win->icon32 = NULL;
             }
 
             /* Smart cascade: find a position where no existing window's
@@ -666,6 +676,10 @@ void wm_set_pending_icon(const uint8_t *icon_data) {
     pending_icon = icon_data;
 }
 
+void wm_set_pending_icon32(const uint8_t *icon_data) {
+    pending_icon32 = icon_data;
+}
+
 /*==========================================================================
  * Hit-test: find topmost window at a screen point
  *=========================================================================*/
@@ -946,7 +960,7 @@ void wm_composite(void) {
      * need a full clear to remove them. */
     bool has_popup = startmenu_is_open() || sysmenu_is_open() ||
                      menu_is_open() || menu_popup_is_open() ||
-                     taskbar_popup_is_open();
+                     taskbar_popup_is_open() || vol_popup_is_open();
     {
         static bool prev_had_popup = false;
         if (prev_had_popup && !has_popup)
@@ -1193,6 +1207,7 @@ void wm_composite(void) {
     menu_popup_draw();
     sysmenu_draw();
     taskbar_popup_draw();
+    vol_popup_draw();
     alttab_draw();
 
     /* Stamp drag outline on visible buffer (before cursor) */

@@ -120,12 +120,13 @@ struct window {
     paint_handler_t  paint_handler;   /* paint callback (may be NULL) */
     void            *user_data;       /* opaque per-window data (e.g. terminal_t*) */
     const uint8_t   *icon;            /* 16x16 icon data (256 bytes), NULL=default */
+    const uint8_t   *icon32;          /* 32x32 icon data (1024 bytes), NULL=default */
 };
 
 /* Size check — only meaningful on the 32-bit ARM target.
  * On 64-bit hosts (where clangd runs) pointers are 8 bytes. */
 #if defined(__arm__) || defined(__thumb__)
-_Static_assert(sizeof(window_t) <= 68, "window_t exceeds 68 bytes");
+_Static_assert(sizeof(window_t) <= 72, "window_t exceeds 72 bytes");
 #endif
 
 /*==========================================================================
@@ -179,6 +180,10 @@ void wm_set_title(hwnd_t hwnd, const char *title);
  * icon_data points to 256 bytes of 16x16 palette-index data.
  * Pass NULL to clear (window will use default icon). */
 void wm_set_pending_icon(const uint8_t *icon_data);
+
+/* Set the 32x32 icon that will be assigned to the next created window.
+ * icon_data points to 1024 bytes of 32x32 palette-index data. */
+void wm_set_pending_icon32(const uint8_t *icon_data);
 
 /* Hit-test all visible windows top-to-bottom.
  * Returns the hwnd of the topmost window containing the point,

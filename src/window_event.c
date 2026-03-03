@@ -464,6 +464,11 @@ void wm_handle_mouse_input(uint8_t type, int16_t x, int16_t y, uint8_t buttons) 
         if (taskbar_popup_mouse(type, x, y)) return;
     }
 
+    /* Volume popup */
+    if (vol_popup_is_open()) {
+        if (vol_popup_mouse(type, x, y)) return;
+    }
+
     /* Start menu first */
     if (startmenu_is_open()) {
         if (startmenu_mouse(type, x, y)) return;
@@ -501,6 +506,7 @@ void wm_handle_mouse_input(uint8_t type, int16_t x, int16_t y, uint8_t buttons) 
             titlebar_btn_zone = HT_NOWHERE;
         }
         if (taskbar_popup_is_open()) taskbar_popup_close();
+        if (vol_popup_is_open()) vol_popup_close();
         if (startmenu_is_open()) startmenu_close();
         if (sysmenu_is_open()) sysmenu_close();
         if (menu_is_open()) menu_close();

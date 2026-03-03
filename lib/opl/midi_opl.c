@@ -14,6 +14,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include "opl_alloc.h"
 #include "emu8950.h"
 #include "midifile.h"
 #include "midi_opl.h"

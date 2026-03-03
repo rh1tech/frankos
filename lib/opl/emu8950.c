@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "opl_alloc.h"
 #include <assert.h>
 /* murmdoom_log.h removed — stub log macros */
 #define MURMDOOM_WARN(...) ((void)0)
