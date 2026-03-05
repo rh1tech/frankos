@@ -1470,9 +1470,6 @@ static void __in_hfa() vAppDetachedTask(void *pv) {
     swap_unregister_by_task(th);
     swap_resume_previous();
     remove_ctx(ctx);
-    #if DEBUG_APP_LOAD
-    goutf("vAppDetachedTask: [%p] <<<\n", ctx);
-    #endif
     if (mem) task_mem_defer_free(mem);
     vTaskDelete( NULL );
     __unreachable();

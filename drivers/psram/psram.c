@@ -116,12 +116,18 @@ void *psram_alloc(size_t size) {
 
     vTaskSuspendAll();
 
-    /* First-fit search */
+    /* First-fit search (with corruption guard) */
     block_hdr_t **prev = &free_list;
     block_hdr_t  *cur  = free_list;
     void *result = NULL;
+    int steps = 0;
+    const int max_steps = (int)(detected_size / MIN_BLOCK);
 
     while (cur) {
+        if (++steps > max_steps) {
+            printf("[psram_alloc] CORRUPT free list at %p, %d steps\n", cur, steps);
+            break;
+        }
         if (cur->size >= size) {
             /* Can we split? Need room for header + MIN_BLOCK. */
             if (cur->size >= size + HDR_SIZE + MIN_BLOCK) {
@@ -160,15 +166,47 @@ void psram_free(void *ptr) {
 
     block_hdr_t *blk = (block_hdr_t *)((uint8_t *)ptr - HDR_SIZE);
 
+    /* Sanity: block header must be inside PSRAM */
+    uintptr_t blk_addr = (uintptr_t)blk;
+    if (blk_addr < PSRAM_BASE || blk_addr >= (PSRAM_BASE + detected_size)) {
+        printf("[psram_free] BAD ptr %p (hdr %p outside PSRAM)\n", ptr, blk);
+        return;
+    }
+
     vTaskSuspendAll();
 
-    /* Insert into free list in address order and coalesce */
+    /* Insert into free list in address order and coalesce.
+     * Guard against corrupted free list (cycle detection). */
     block_hdr_t **prev = &free_list;
     block_hdr_t  *cur  = free_list;
+    int steps = 0;
+    const int max_steps = (int)(detected_size / MIN_BLOCK);
 
     while (cur && cur < blk) {
+        if (++steps > max_steps) {
+            /* Free list is corrupted — break to avoid infinite loop */
+            (void)xTaskResumeAll();
+            printf("[psram_free] CORRUPT free list at %p (freeing %p), %d steps\n",
+                   cur, ptr, steps);
+            return;
+        }
+        /* Validate that next pointer stays within PSRAM */
+        if (cur->next && ((uintptr_t)cur->next < PSRAM_BASE ||
+                          (uintptr_t)cur->next >= (PSRAM_BASE + detected_size))) {
+            (void)xTaskResumeAll();
+            printf("[psram_free] CORRUPT node %p->next=%p (freeing %p)\n",
+                   cur, cur->next, ptr);
+            return;
+        }
         prev = &cur->next;
         cur  = cur->next;
+    }
+
+    /* Detect double-free: blk should not already be in the free list */
+    if (cur == blk) {
+        (void)xTaskResumeAll();
+        printf("[psram_free] DOUBLE FREE %p\n", ptr);
+        return;
     }
 
     blk->next = cur;
